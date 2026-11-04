@@ -37,7 +37,9 @@ is the hexadecimal digest, with no filename or artifact metadata interpretation.
 
 Put consumes and hashes a source stream into a private temporary file, then asks
 storage to publish those complete bytes. Its working copy buffer is bounded; the
-payload is not retained in RAM. `Options.TempDir` chooses staging; empty uses the
+payload is not retained in RAM. `Options.MaxBytes` optionally caps one Put's size
+(`ErrLimit` when exceeded; zero means unlimited, so untrusted streams should set it
+or be wrapped with `io.LimitReader`). `Options.TempDir` chooses staging; empty uses the
 OS temporary directory. New resolves a supplied relative path without creating
 files/directories. The configured staging directory must already exist and be writable.
 Staging files are closed/removed on success and failure; cleanup errors are returned.
@@ -148,5 +150,7 @@ staging-cleanup failures, duplicate-plus-cleanup error preservation, final-byte 
 early close, repeat close, and explicit internal observation. An 8 MiB generated
 stream verifies bounded read chunking without a whole-payload input buffer.
 Cleanup failure injection is package-private; filesystem disk-full/sync failures
-and crash durability are not qualified. The existing [1 GiB storage baseline](verification.md)
-is not a CAS throughput or memory measurement.
+and crash durability are not qualified. The [1 GiB storage baseline](verification.md)
+is not itself a CAS throughput or memory measurement; a separate CAS-over-storage
+1 GiB trial (`TestLargeCAS1GiB`) is documented alongside it in
+[verification](verification.md).

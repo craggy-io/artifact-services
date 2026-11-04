@@ -102,11 +102,11 @@ history, err := lineage.New(artifactStore, lineage.Options{
     ValidateSelector: objectService.ValidateRef,
 })
 if err != nil { return err }
-defer history.Close()
-_, err = history.Record(ctx, lineage.Record{
+defer func() { err = errors.Join(err, history.Close()) }() // requires a named err return (and the errors import)
+if _, err = history.Record(ctx, lineage.Record{
     ID: "table-A/revision-1",
     Revision: &lineage.Revision{Artifact: artifactID},
-})
+}); err != nil { return err }
 ```
 
 A and B can retain independent histories when SQL produces C. Record C's own
@@ -183,7 +183,8 @@ Classification is persisted at Record time and cannot change on retry.
 
 RecordError carries ID, Committed and the underlying cause. A later cleanup error
 can follow authoritative publication; callers must not infer rollback. ErrNotFound,
-ErrInvalid, ErrConflict, ErrUnsupportedSelector and ErrLimit support errors.Is;
+ErrInvalid, ErrConflict, ErrUnsupportedSelector, ErrLimit, ErrClosed and ErrCursor
+support errors.Is;
 original causes remain wrapped. Cancellation is checked during validation, evidence
 reads and traversal; it cannot interrupt arbitrary blocked I/O. Canceled/failed
 pages are not returned as complete. Parent failures remain observable even when

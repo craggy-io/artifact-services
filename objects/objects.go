@@ -164,6 +164,11 @@ func New(blobs cas.Store, store *artifacts.Service, options Options) (*Service, 
 	if options.MaxRows < 1 || options.MaxBytes < 1 || options.MaxRowBytes < 1 || options.MaxResultRows < 1 || options.MaxJoinPairs < 1 || options.MaxGroups < 1 || options.MaxDependencies < 1 {
 		return nil, ErrLimit
 	}
+	// Keep headroom for the +1 probes used by bounded readers so a limit at
+	// math.MaxInt64 cannot wrap a LimitReader length negative.
+	if options.MaxBytes > (1<<62) || options.MaxRowBytes > (1<<62) {
+		return nil, ErrLimit
+	}
 	return &Service{blobs: blobs, artifacts: store, limits: options}, nil
 }
 func complete() provenance.Coverage {

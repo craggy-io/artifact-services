@@ -34,6 +34,9 @@ func NewFilesystem(root string) (*Filesystem, error) {
 }
 
 func (s *Filesystem) blobPath(key string) (string, error) {
+	if s == nil || s.root == "" {
+		return "", errors.New("storage: Filesystem not constructed with NewFilesystem")
+	}
 	if len(key) < 2 || len(key) > 128 {
 		return "", ErrInvalidKey
 	}

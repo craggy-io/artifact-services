@@ -4,13 +4,30 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
 	"strings"
 
+	"github.com/craggy-io/artifact-services/internal/pager"
 	"github.com/craggy-io/artifact-services/observability"
 )
+
+// mapPageError joins public sentinels for internal paging failures so external
+// consumers can match them with errors.Is.
+func mapPageError(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, pager.ErrCursor):
+		return errors.Join(ErrCursor, ErrInvalidQuery, err)
+	case errors.Is(err, pager.ErrCapacity):
+		return errors.Join(ErrLimit, err)
+	default:
+		return err
+	}
+}
 
 func normalizeLimit(limit int) (int, error) {
 	if limit < 0 || limit > 1000 {
@@ -68,7 +85,7 @@ func (s *Service) ListFiles(ctx context.Context, id ID, query FileQuery) (page F
 		return entries, nil
 	})
 	if err != nil {
-		return page, err
+		return page, mapPageError(err)
 	}
 	if err := ctx.Err(); err != nil {
 		return page, err
@@ -170,7 +187,7 @@ func (s *Service) Search(ctx context.Context, query CatalogQuery) (page CatalogP
 		return items, nil
 	})
 	if err != nil {
-		return page, err
+		return page, mapPageError(err)
 	}
 	if err := ctx.Err(); err != nil {
 		return page, err
@@ -212,11 +229,15 @@ type fileReader struct {
 	span        *observability.Span
 	closed, eof bool
 	closeErr    error
+	terminal    error
 }
 
 func (r *fileReader) Read(p []byte) (int, error) {
 	if r.closed {
 		return 0, io.ErrClosedPipe
+	}
+	if r.terminal != nil {
+		return 0, r.terminal
 	}
 	n, err := r.source.Read(p)
 	r.span.AddBytes(int64(n))
@@ -226,6 +247,7 @@ func (r *fileReader) Read(p []byte) (int, error) {
 			r.span.Count("eof", 1)
 		}
 	} else if err != nil {
+		r.terminal = err
 		r.span.RecordError(err)
 	}
 	return n, err

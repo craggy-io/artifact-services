@@ -31,6 +31,7 @@ type Service struct {
 	mu         sync.RWMutex
 	records    map[ID]persisted
 	closed     bool
+	closeDone  bool
 	pages      *pager.Cache[Record]
 	traversals *pager.Cache[traversalItem]
 }
@@ -61,15 +62,24 @@ func New(store artifacts.Store, options Options) (*Service, error) {
 	}
 	return s, nil
 }
+
+// Close stops operations and releases the root lease. If lease release fails,
+// a later Close retries it instead of reporting success.
 func (s *Service) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed {
+	if s.closeDone {
 		return nil
 	}
 	s.closed = true
-	return s.journal.Close()
+	if err := s.journal.Close(); err != nil {
+		return err
+	}
+	s.closeDone = true
+	return nil
 }
+
+func closedError() error { return errors.Join(ErrClosed, journal.ErrClosed) }
 func start(ctx context.Context, operation, key string) (context.Context, *observability.Span) {
 	return observability.Start(ctx, observability.Scope{Layer: "lineage", Operation: operation}, key)
 }
@@ -106,7 +116,7 @@ func (s *Service) requireOpen() error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.closed {
-		return journal.ErrClosed
+		return closedError()
 	}
 	return nil
 }
@@ -119,7 +129,24 @@ func (s *Service) lookup(id ID) (persisted, bool) {
 func (s *Service) Record(ctx context.Context, r Record) (id ID, result error) {
 	category := observability.CategoryFrom(ctx)
 	ctx, span := start(ctx, "record", string(r.ID))
-	defer func() { span.End(result) }()
+	committed, reused := false, false
+	defer func() {
+		if committed {
+			if reused {
+				span.Count("reused", 1)
+			} else {
+				span.Count("recorded", 1)
+			}
+		}
+		if result != nil {
+			id = r.ID
+			var stage *RecordError
+			if !errors.As(result, &stage) {
+				result = &RecordError{ID: r.ID, Committed: committed, Err: result}
+			}
+		}
+		span.End(result)
+	}()
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
@@ -143,13 +170,14 @@ func (s *Service) Record(ctx context.Context, r Record) (id ID, result error) {
 	if err != nil {
 		return "", err
 	}
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		return "", journal.ErrClosed
+	// Append (including its file sync) runs outside the service lock; the
+	// journal's own mutex and idempotent/conflict semantics serialize writers.
+	if err := s.requireOpen(); err != nil {
+		return "", err
 	}
-	entry, reused, err := s.journal.Append(ctx, string(r.ID), envelope)
-	committed := err == nil
+	var entry journal.Entry
+	entry, reused, err = s.journal.Append(ctx, string(r.ID), envelope)
+	committed = err == nil
 	var commit *journal.CommitError
 	if errors.As(err, &commit) {
 		committed = commit.Committed
@@ -157,22 +185,24 @@ func (s *Service) Record(ctx context.Context, r Record) (id ID, result error) {
 	if committed {
 		var stored persisted
 		if e := json.Unmarshal(entry.Data, &stored); e != nil {
-			s.mu.Unlock()
 			return r.ID, &RecordError{ID: r.ID, Committed: true, Err: e}
 		}
-		s.records[r.ID] = stored
+		s.mu.Lock()
+		if !s.closed {
+			s.records[r.ID] = stored
+		}
+		s.mu.Unlock()
 	}
-	s.mu.Unlock()
 	if err != nil {
-		if errors.Is(err, journal.ErrConflict) {
+		switch {
+		case errors.Is(err, journal.ErrConflict):
 			err = errors.Join(ErrConflict, err)
+		case errors.Is(err, journal.ErrCapacity):
+			err = errors.Join(ErrLimit, err)
+		case errors.Is(err, journal.ErrClosed):
+			err = errors.Join(closedError(), err)
 		}
 		return r.ID, &RecordError{ID: r.ID, Committed: committed, Err: err}
-	}
-	if reused {
-		span.Count("reused", 1)
-	} else {
-		span.Count("recorded", 1)
 	}
 	return r.ID, nil
 }
@@ -314,9 +344,30 @@ func evidence(r Record) []Evidence {
 	return nil
 }
 
+// mappingBudget bounds aggregate evidence decoding across many records so a
+// traversal/list cannot re-decode shared evidence without limit.
+type mappingBudget struct{ bytes int64 }
+
+const maxAggregateEvidenceBytes = 32 << 20
+
+func (b *mappingBudget) add(n int64) error {
+	if b == nil {
+		return nil
+	}
+	b.bytes += n
+	if b.bytes > maxAggregateEvidenceBytes {
+		return ErrLimit
+	}
+	return nil
+}
+
 // eachMapping streams bounded evidence records. No entire evidence payload is held
 // in memory; expansion has a hard edge budget independent of caller page size.
 func (s *Service) eachMapping(ctx context.Context, r Record, visit func(int, Evidence, provenance.Mapping) error) error {
+	return s.eachMappingBudget(ctx, r, nil, visit)
+}
+
+func (s *Service) eachMappingBudget(ctx context.Context, r Record, budget *mappingBudget, visit func(int, Evidence, provenance.Mapping) error) error {
 	refs := evidence(r)
 	if len(refs) > 64 {
 		return ErrLimit
@@ -346,6 +397,9 @@ func (s *Service) eachMapping(ctx context.Context, r Record, visit func(int, Evi
 				if total > 16<<20 {
 					return ErrLimit
 				}
+				if err := budget.add(int64(len(line) + 1)); err != nil {
+					return err
+				}
 				if len(bytes.TrimSpace(line)) == 0 {
 					continue
 				}
@@ -373,7 +427,13 @@ func (s *Service) eachMapping(ctx context.Context, r Record, visit func(int, Evi
 					return err
 				}
 			}
-			return scanner.Err()
+			if err := scanner.Err(); err != nil {
+				if errors.Is(err, bufio.ErrTooLong) {
+					return errors.Join(ErrLimit, err)
+				}
+				return err
+			}
+			return nil
 		}()
 		closeErr := reader.Close()
 		if err != nil || closeErr != nil {
@@ -386,7 +446,7 @@ func (s *Service) snapshot() ([]persisted, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.closed {
-		return nil, journal.ErrClosed
+		return nil, closedError()
 	}
 	values := make([]persisted, 0, len(s.records))
 	for _, p := range s.records {

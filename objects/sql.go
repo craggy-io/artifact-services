@@ -153,6 +153,16 @@ func (p *parser) name() string {
 	}
 	return strings.ToLower(t.text)
 }
+
+// rawName preserves identifier case; output aliases name schema column IDs,
+// which are case-sensitive, unlike display-name matching.
+func (p *parser) rawName() string {
+	t := p.take()
+	if t.kind != "ident" {
+		p.err = fmt.Errorf("%w: identifier required", ErrQuery)
+	}
+	return t.text
+}
 func (p *parser) expr(min int) *expression {
 	p.depth++
 	defer func() { p.depth-- }()
@@ -257,7 +267,7 @@ func parseSQL(text string) (sqlPlan, error) {
 		e := p.expr(0)
 		alias := ""
 		if p.accept("AS") {
-			alias = p.name()
+			alias = p.rawName()
 		} else if e.kind == "column" {
 			parts := strings.Split(e.text, ".")
 			alias = parts[len(parts)-1]
@@ -380,11 +390,30 @@ func expressionText(e *expression) string {
 	return e.text
 }
 
+// sameColumnRef compares column references by identity, tolerating one side
+// being written unqualified (parser lowercases column text).
+func sameColumnRef(a, b string) bool {
+	pa, pb := strings.Split(a, "."), strings.Split(b, ".")
+	if pa[len(pa)-1] != pb[len(pb)-1] {
+		return false
+	}
+	if len(pa) == 2 && len(pb) == 2 {
+		return pa[0] == pb[0]
+	}
+	return true
+}
+
 func groupedExpression(e *expression, groups []*expression) bool {
 	if e == nil || e.kind == "aggregate" || e.kind == "literal" || e.kind == "param" {
 		return true
 	}
 	for _, g := range groups {
+		if e.kind == "column" && g.kind == "column" {
+			if sameColumnRef(e.text, g.text) {
+				return true
+			}
+			continue
+		}
 		if expressionText(e) == expressionText(g) {
 			return true
 		}

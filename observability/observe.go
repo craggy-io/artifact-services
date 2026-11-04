@@ -5,8 +5,28 @@ package observability
 import (
 	"context"
 	"errors"
+	"math"
 	"sync/atomic"
 	"time"
+)
+
+// satAdd adds saturating at math.MaxInt64 so extreme deltas never wrap a
+// counter or byte total negative.
+func satAdd(a, b int64) int64 {
+	if b > 0 && a > math.MaxInt64-b {
+		return math.MaxInt64
+	}
+	if b < 0 && a < math.MinInt64-b {
+		return math.MinInt64
+	}
+	return a + b
+}
+
+const (
+	// maxDistinctCounters bounds retained counter names per span/bucket; new
+	// names beyond it are dropped rather than retained for process lifetime.
+	maxDistinctCounters = 1024
+	maxRecordedErrors   = 8
 )
 
 // Scope separates metrics for each layer and operation. Use bounded labels.
@@ -110,6 +130,7 @@ type Span struct {
 	event       Event
 	start, last time.Time
 	ended       bool
+	errCount    int
 }
 
 // Start returns a derived context for child operations and a span. With no
@@ -156,8 +177,8 @@ func (s *Span) AddBytes(n int64) {
 	if s == nil || s.ended || n <= 0 {
 		return
 	}
-	s.event.Bytes += n
-	s.options.Collector.update(s.event.Scope, s.event.Category, func(m *Metrics) { m.Bytes += n })
+	s.event.Bytes = satAdd(s.event.Bytes, n)
+	s.options.Collector.update(s.event.Scope, s.event.Category, func(m *Metrics) { m.Bytes = satAdd(m.Bytes, n) })
 	if time.Since(s.last) >= s.options.ProgressInterval {
 		s.last = time.Now()
 		s.emit()
@@ -173,21 +194,33 @@ func (s *Span) Count(name string, n int64) {
 	if s.event.Counters == nil {
 		s.event.Counters = make(map[string]int64)
 	}
-	s.event.Counters[name] += n
+	if _, ok := s.event.Counters[name]; !ok && len(s.event.Counters) >= maxDistinctCounters {
+		return
+	}
+	s.event.Counters[name] = satAdd(s.event.Counters[name], n)
 	s.options.Collector.update(s.event.Scope, s.event.Category, func(m *Metrics) {
 		if m.Counters == nil {
 			m.Counters = make(map[string]int64)
 		}
-		m.Counters[name] += n
+		if _, ok := m.Counters[name]; !ok && len(m.Counters) >= maxDistinctCounters {
+			return
+		}
+		m.Counters[name] = satAdd(m.Counters[name], n)
 	})
 	s.emit()
 }
 
 // RecordError reports a nonterminal error immediately, retaining it for End.
+// At most maxRecordedErrors are retained/emitted so a repeatedly failing
+// operation cannot grow the retained error or callback count without bound.
 func (s *Span) RecordError(err error) {
 	if s == nil || s.ended || err == nil {
 		return
 	}
+	if s.errCount >= maxRecordedErrors {
+		return
+	}
+	s.errCount++
 	s.event.Err = errors.Join(s.event.Err, err)
 	s.emit()
 }
@@ -204,7 +237,7 @@ func (s *Span) End(err error) {
 	s.event.Elapsed = time.Since(s.start)
 	s.options.Collector.update(s.event.Scope, s.event.Category, func(m *Metrics) {
 		m.Completed++
-		m.Duration += s.event.Elapsed
+		m.Duration = time.Duration(satAdd(int64(m.Duration), int64(s.event.Elapsed)))
 		if s.event.Err != nil {
 			m.Errors++
 		}

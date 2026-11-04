@@ -132,6 +132,7 @@ boundary. Journal projections can be rebuilt from authoritative records.
 From this module root, using the Go version specified in [go.mod](go.mod):
 
 ```sh
+test -z "$(gofmt -l .)"
 go test ./integration -count=1
 go test ./...
 go test -race ./...

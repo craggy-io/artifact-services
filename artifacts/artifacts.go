@@ -32,6 +32,9 @@ var (
 	ErrNotFound        = errors.New("artifacts: not found")
 	ErrConflict        = errors.New("artifacts: conflicting registration")
 	ErrUnvalidated     = errors.New("artifacts: validated claim not registered")
+	ErrClosed          = errors.New("artifacts: service closed")
+	ErrCursor          = errors.New("artifacts: invalid, expired or mismatched cursor")
+	ErrLimit           = errors.New("artifacts: resource limit exceeded")
 )
 
 // PublishError distinguishes immutable manifest availability from acceptance in

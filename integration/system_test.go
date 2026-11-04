@@ -9,6 +9,7 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/craggy-io/artifact-services/artifacts"
@@ -20,6 +21,24 @@ import (
 	"github.com/craggy-io/artifact-services/storage"
 )
 
+// eventLog is a concurrency-safe Observer sink: callbacks may run
+// concurrently across spans, so the example must synchronize them.
+type eventLog struct {
+	mu     sync.Mutex
+	events []observability.Event
+}
+
+func (l *eventLog) add(e observability.Event) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.events = append(l.events, e)
+}
+func (l *eventLog) snapshot() []observability.Event {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]observability.Event(nil), l.events...)
+}
+
 type system struct {
 	ctx       context.Context
 	cas       *cas.Service
@@ -27,7 +46,7 @@ type system struct {
 	objects   *objects.Service
 	lineage   *lineage.Service
 	metrics   *observability.Collector
-	events    *[]observability.Event
+	events    *eventLog
 }
 
 func newSystem(t *testing.T) *system {
@@ -64,9 +83,9 @@ func newSystem(t *testing.T) *system {
 		}
 	})
 	metrics := new(observability.Collector)
-	events := []observability.Event{}
-	ctx := observability.With(context.Background(), observability.Options{Collector: metrics, Observer: func(e observability.Event) { events = append(events, e) }})
-	return &system{ctx, content, a, o, l, metrics, &events}
+	events := &eventLog{}
+	ctx := observability.With(context.Background(), observability.Options{Collector: metrics, Observer: events.add})
+	return &system{ctx, content, a, o, l, metrics, events}
 }
 func (s *system) file(t *testing.T, ctx context.Context, path string, data []byte, kind string) artifacts.ID {
 	t.Helper()
@@ -117,6 +136,11 @@ func TestAllLayersJoinSchemaEvolutionAndProvenance(t *testing.T) {
 	s := newSystem(t)
 	apk := s.file(t, s.ctx, "app.apk", []byte("PK\x03\x04 apk fixture"), "apk")
 	s.record(t, lineage.Record{ID: "import-apk", Activity: &lineage.Activity{Kind: "import", Outputs: []provenance.Ref{{Artifact: string(apk)}}, Actor: "user"}})
+	// Identical retry is idempotent; a conflicting record for the same ID is rejected.
+	s.record(t, lineage.Record{ID: "import-apk", Activity: &lineage.Activity{Kind: "import", Outputs: []provenance.Ref{{Artifact: string(apk)}}, Actor: "user"}})
+	if _, err := s.lineage.Record(s.ctx, lineage.Record{ID: "import-apk", Activity: &lineage.Activity{Kind: "import", Outputs: []provenance.Ref{{Artifact: string(apk)}}, Actor: "other"}}); !errors.Is(err, lineage.ErrConflict) {
+		t.Fatalf("conflicting record = %v, want ErrConflict", err)
+	}
 	s.revision(t, "apk-1", apk)
 	schema := s.schema(t, objects.Column{ID: "region", Name: "region", Shape: objects.Shape{Type: "string"}}, objects.Column{ID: "amount", Name: "amount", Shape: objects.Shape{Type: "integer"}})
 	a := s.table(t, schema, "{\"id\":\"a1\",\"values\":{\"region\":\"west\",\"amount\":2}}\n{\"id\":\"a2\",\"values\":{\"region\":\"west\",\"amount\":3}}\n")
@@ -136,7 +160,10 @@ func TestAllLayersJoinSchemaEvolutionAndProvenance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, source, _, _, _ := sourceClaim.Fields()
+	claimedSchema, source, validator, encoding, valid := sourceClaim.Fields()
+	if !valid || artifacts.ID(claimedSchema) != schema || validator != objects.ValidatorVersion || encoding != objects.NDJSON {
+		t.Fatalf("validated claim fields = %q %q %q %q valid=%t", claimedSchema, source, validator, encoding, valid)
+	}
 	migrated, err := s.objects.Publish(s.ctx, objects.PublishRequest{ValidationRequest: objects.ValidationRequest{Data: artifacts.ID(source), Schema: schema2, Encoding: objects.NDJSON}})
 	if err != nil {
 		t.Fatal(err)
@@ -254,10 +281,21 @@ func TestAllLayersJoinSchemaEvolutionAndProvenance(t *testing.T) {
 	if err != nil || len(diagnostic.Items) != 1 {
 		t.Fatal(diagnostic, err)
 	}
-	for _, event := range *s.events {
+	observed := s.events.snapshot()
+	if len(observed) == 0 {
+		t.Fatal("no events observed; Observer wiring broken")
+	}
+	finals := 0
+	for _, event := range observed {
 		if event.Category != observability.User {
 			t.Fatal("internal event leaked")
 		}
+		if event.Final {
+			finals++
+		}
+	}
+	if finals == 0 {
+		t.Fatal("no final events observed")
 	}
 	user := s.metrics.Snapshot(observability.SnapshotOptions{})
 	all := s.metrics.Snapshot(observability.SnapshotOptions{IncludeInternal: true})
@@ -296,7 +334,6 @@ func TestTypedValidationCannotBeSpoofedAndJSONQueries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stream.Close()
 	row, err := stream.Next()
 	if err != nil {
 		t.Fatal(err)
@@ -304,6 +341,18 @@ func TestTypedValidationCannotBeSpoofedAndJSONQueries(t *testing.T) {
 	b, _ := json.Marshal(row.Values)
 	if !strings.Contains(string(b), "hello") {
 		t.Fatal(string(b))
+	}
+	if _, err = stream.Next(); err != io.EOF {
+		t.Fatal("expected EOF after one JSON row", err)
+	}
+	if coverage := stream.Coverage(); coverage.Rows != provenance.Unsupported {
+		t.Fatalf("JSON coverage = %+v, want Rows unsupported", coverage)
+	}
+	if len(row.Dependencies) != 1 || row.Dependencies[0].Ref.Artifact != string(typed) || row.Dependencies[0].Ref.Revision != "json-1" {
+		t.Fatalf("JSON document dependency = %+v", row.Dependencies)
+	}
+	if err = stream.Close(); err != nil {
+		t.Fatal(err)
 	}
 	cancelled, cancel := context.WithCancel(s.ctx)
 	cancel()

@@ -55,6 +55,12 @@ func LargeRoundTrip(t testing.TB, put func(io.Reader) error, open func() (io.Rea
 		close(done)
 		<-sampled
 		t.Logf("Go HeapAlloc baseline=%.2f MiB sampled_peak=%.2f MiB samples=%d interval=10ms", float64(baseline)/(1<<20), float64(peak)/(1<<20), samples)
+		// Enforce the streaming claim: a whole-blob buffer regression (1 GiB)
+		// must fail the trial, with generous headroom for runtime noise.
+		const maxHeapGrowth = 256 << 20
+		if peak > baseline && peak-baseline > maxHeapGrowth {
+			t.Errorf("HeapAlloc grew %.2f MiB over baseline during round trip; whole-blob buffering suspected (limit %.2f MiB)", float64(peak-baseline)/(1<<20), float64(maxHeapGrowth)/(1<<20))
+		}
 	}()
 	expected := sha256.New()
 	started := time.Now()
