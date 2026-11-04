@@ -23,8 +23,8 @@ versioned promise is its [schema](adapters.md#sqlindex).
 
 Releases are tags following semantic versioning: `vX.Y.Z` for this module and
 `adapters/sqlindex/vX.Y.Z` for the nested one, tagged together. A release changing an
-on-disk format says so in its notes. No release has been tagged yet, so until one is,
-consumers depend on pseudo-versions.
+on-disk format says so in its notes. The first release is `v0.1.0` (with `adapters/sqlindex/v0.1.0`); pin those tags
+rather than pseudo-versions.
 
 ## On-disk formats
 
