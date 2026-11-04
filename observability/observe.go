@@ -26,11 +26,19 @@ func selected(category Category, includeInternal bool) bool {
 	return category == User || includeInternal
 }
 
+// CategoryFrom returns this context's explicit inherited classification, even
+// when observation is disabled. Ordinary contexts default to User. Layers use
+// this value when persisting record classification; never infer it from keys.
+// The context must be non-nil, as with the other context APIs in this package.
+func CategoryFrom(ctx context.Context) Category {
+	return bindingFrom(ctx).category
+}
+
 // WithInternal marks this context subtree as supporting work. Classification is
 // sticky: With and Start preserve it; there is no descendant reset to User.
 // Start user-facing siblings from the original user context instead.
 func WithInternal(ctx context.Context) context.Context {
-	b, _ := ctx.Value(contextKey{}).(binding)
+	b := bindingFrom(ctx)
 	if b.category == Internal {
 		return ctx
 	}
@@ -76,13 +84,18 @@ type binding struct {
 	category Category
 }
 
+func bindingFrom(ctx context.Context) binding {
+	b, _ := ctx.Value(contextKey{}).(binding)
+	return b
+}
+
 var nextID atomic.Uint64
 
 // With attaches configuration to this context subtree, retaining its current
 // parent link and category. Empty Options explicitly disable observation in the subtree.
 // Contexts must be non-nil, as with standard context APIs.
 func With(ctx context.Context, options Options) context.Context {
-	b, _ := ctx.Value(contextKey{}).(binding)
+	b := bindingFrom(ctx)
 	if options.ProgressInterval <= 0 {
 		options.ProgressInterval = 100 * time.Millisecond
 	}
@@ -102,8 +115,8 @@ type Span struct {
 // Start returns a derived context for child operations and a span. With no
 // observer/collector, it returns the original context and nil without allocation.
 func Start(ctx context.Context, scope Scope, key string) (context.Context, *Span) {
-	b, ok := ctx.Value(contextKey{}).(binding)
-	if !ok || (b.options.Observer == nil && b.options.Collector == nil) {
+	b := bindingFrom(ctx)
+	if b.options.Observer == nil && b.options.Collector == nil {
 		return ctx, nil
 	}
 	now := time.Now()
