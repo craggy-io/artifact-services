@@ -51,11 +51,15 @@ type blobReader struct {
 	closer      io.Closer
 	closed, eof bool
 	closeErr    error
+	terminal    error
 }
 
 func (r *blobReader) Read(p []byte) (int, error) {
 	if r.closed {
 		return 0, io.ErrClosedPipe
+	}
+	if r.terminal != nil {
+		return 0, r.terminal
 	}
 	n, err := r.streamReader.Read(p)
 	if err == io.EOF {
@@ -64,6 +68,7 @@ func (r *blobReader) Read(p []byte) (int, error) {
 			r.span.Count("eof", 1)
 		}
 	} else if err != nil {
+		r.terminal = err
 		r.span.RecordError(err)
 	}
 	return n, err

@@ -62,6 +62,8 @@ Unknown object properties and unknown/missing table columns are rejected. Numeri
 bounds are binary64 configuration values compared against exact input numbers;
 integer data is never rounded to binary64 for bound comparison. Schema definitions
 are validated, including enum-member type compatibility, before publication.
+Nullable waives only the type check for null: when an Enum is present, null is
+accepted only if null is itself an enumerated member.
 
 Table encoding `ndjson-rows-v1` contains one JSON record per line:
 
@@ -185,7 +187,7 @@ if err != nil { return err }
 for {
     row, err := stream.Next()
     if err == io.EOF { break }
-    if err != nil { stream.Close(); return err }
+    if err != nil { return errors.Join(err, stream.Close()) }
     _ = row.Values
     _ = row.Dependencies // exact history-qualified value/predicate/control refs
 }

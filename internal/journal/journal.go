@@ -14,10 +14,12 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode/utf8"
 )
 
 var ErrConflict = errors.New("journal: conflicting identity")
 var ErrClosed = errors.New("journal: closed")
+var ErrCapacity = errors.New("journal: capacity exceeded")
 
 type CommitError struct {
 	Committed bool
@@ -40,14 +42,15 @@ type Entry struct {
 	Data     json.RawMessage `json:"data"`
 }
 type Store struct {
-	mu       sync.Mutex
-	root     string
-	lease    *os.File
-	options  Options
-	entries  map[string]Entry
-	sequence uint64
-	bytes    int64
-	closed   bool
+	mu           sync.Mutex
+	root         string
+	lease        *os.File
+	options      Options
+	entries      map[string]Entry
+	sequence     uint64
+	bytes        int64
+	closed       bool
+	leaseRemoved bool
 }
 
 func Open(root string, o Options) (result *Store, err error) {
@@ -134,7 +137,7 @@ func Open(root string, o Options) (result *Store, err error) {
 		}
 		s.bytes += int64(len(data))
 		if s.bytes > o.MaxBytes || len(s.entries) >= o.MaxRecords {
-			return nil, errors.New("journal: capacity exceeded")
+			return nil, ErrCapacity
 		}
 		s.sequence = entry.Sequence
 		s.entries[entry.Key] = entry
@@ -189,7 +192,7 @@ func (s *Store) Append(ctx context.Context, key string, data []byte) (Entry, boo
 		return Entry{}, false, err
 	}
 	if len(encoded) > 8<<20 || s.bytes+int64(len(encoded)) > s.options.MaxBytes || len(s.entries) >= s.options.MaxRecords {
-		return Entry{}, false, errors.New("journal: capacity exceeded")
+		return Entry{}, false, ErrCapacity
 	}
 	if err = ctx.Err(); err != nil {
 		return Entry{}, false, err
@@ -233,18 +236,40 @@ func publish(path string, data []byte) (committed bool, result error) {
 	}
 	return true, nil
 }
+
+// Close stops appends and releases the lease. It is retryable: if closing or
+// removing the lease file fails, a later Close retries the unfinished step
+// instead of reporting success while the stale lease still blocks Open.
 func (s *Store) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed {
+	if s.root == "" {
+		return ErrClosed
+	}
+	if s.closed && s.lease == nil && s.leaseRemoved {
 		return nil
 	}
 	s.closed = true
-	return errors.Join(s.lease.Close(), os.Remove(filepath.Join(s.root, ".lease")))
+	var result error
+	if s.lease != nil {
+		if err := s.lease.Close(); err == nil || errors.Is(err, os.ErrClosed) {
+			s.lease = nil
+		} else {
+			result = errors.Join(result, err)
+		}
+	}
+	if !s.leaseRemoved {
+		if err := os.Remove(filepath.Join(s.root, ".lease")); err == nil || errors.Is(err, os.ErrNotExist) {
+			s.leaseRemoved = true
+		} else {
+			result = errors.Join(result, err)
+		}
+	}
+	return result
 }
 
 func requireKey(key string) error {
-	if key == "" || len(key) > 1024 {
+	if key == "" || len(key) > 1024 || !utf8.ValidString(key) {
 		return errors.New("journal: key limit")
 	}
 	return nil

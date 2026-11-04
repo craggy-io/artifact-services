@@ -1,6 +1,7 @@
 package objects
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -37,19 +38,36 @@ type evaluated struct {
 }
 
 func dependencyKey(d provenance.Dependency) string { b, _ := json.Marshal(d); return string(b) }
-func union(groups ...[]provenance.Dependency) []provenance.Dependency {
-	m := map[string]provenance.Dependency{}
+
+// depSet accumulates deduplicated dependencies incrementally so hot loops
+// marshal each dependency once instead of rebuilding a union per member.
+type depSet struct {
+	m map[string]provenance.Dependency
+}
+
+func (s *depSet) add(groups ...[]provenance.Dependency) {
+	if s.m == nil {
+		s.m = map[string]provenance.Dependency{}
+	}
 	for _, group := range groups {
 		for _, d := range group {
-			m[dependencyKey(d)] = d
+			s.m[dependencyKey(d)] = d
 		}
 	}
-	keys := sortedKeys(m)
+}
+func (s *depSet) len() int { return len(s.m) }
+func (s *depSet) sorted() []provenance.Dependency {
+	keys := sortedKeys(s.m)
 	result := make([]provenance.Dependency, 0, len(keys))
 	for _, k := range keys {
-		result = append(result, m[k])
+		result = append(result, s.m[k])
 	}
 	return result
+}
+func union(groups ...[]provenance.Dependency) []provenance.Dependency {
+	var set depSet
+	set.add(groups...)
+	return set.sorted()
 }
 func role(deps []provenance.Dependency, kind string) []provenance.Dependency {
 	result := make([]provenance.Dependency, len(deps))
@@ -86,7 +104,11 @@ func rat(value any) (*big.Rat, bool) {
 	r, ok := new(big.Rat).SetString(text)
 	return r, ok
 }
-func ratValue(r *big.Rat) (any, error) {
+
+// ratValue renders an exact decimal. Only division results are capped at 32
+// decimal places (see docs); other arithmetic keeps full precision up to a
+// generous bound that still fits canonical-number limits.
+func ratValue(r *big.Rat, maxPlaces int) (any, error) {
 	if r.IsInt() {
 		return json.Number(r.Num().String()), nil
 	}
@@ -96,7 +118,7 @@ func ratValue(r *big.Rat) (any, error) {
 		for new(big.Int).Mod(den, f).Sign() == 0 {
 			den.Div(den, f)
 			counts[i]++
-			if counts[i] > 32 {
+			if counts[i] > maxPlaces {
 				return nil, fmt.Errorf("%w: decimal precision limit", ErrLimit)
 			}
 		}
@@ -170,9 +192,18 @@ func resolveColumn(t tuple, name string) (evaluated, error) {
 	}
 	return *found, nil
 }
-func evaluate(e *expression, t tuple, group []tuple, params map[string]any) (evaluated, error) {
+
+const (
+	divisionPlaces = 32
+	generalPlaces  = 4096
+)
+
+func evaluate(ctx context.Context, e *expression, t tuple, group []tuple, params map[string]any) (evaluated, error) {
 	if e == nil {
 		return evaluated{value: true}, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return evaluated{}, err
 	}
 	switch e.kind {
 	case "literal":
@@ -186,23 +217,26 @@ func evaluate(e *expression, t tuple, group []tuple, params map[string]any) (eva
 	case "column":
 		return resolveColumn(t, e.text)
 	case "aggregate":
-		var deps []provenance.Dependency
+		var deps depSet
 		sum := new(big.Rat)
 		count := int64(0)
 		for _, member := range group {
+			if err := ctx.Err(); err != nil {
+				return evaluated{}, err
+			}
 			if e.left.kind == "star" {
 				if e.text != "count" {
 					return evaluated{}, ErrUnsupported
 				}
 				count++
-				deps = union(deps, rowDeps(member))
+				deps.add(rowDeps(member))
 				continue
 			}
-			v, err := evaluate(e.left, member, nil, params)
+			v, err := evaluate(ctx, e.left, member, nil, params)
 			if err != nil {
 				return evaluated{}, err
 			}
-			deps = union(deps, v.deps)
+			deps.add(v.deps)
 			if v.value == nil {
 				continue
 			}
@@ -216,15 +250,15 @@ func evaluate(e *expression, t tuple, group []tuple, params map[string]any) (eva
 			}
 		}
 		if e.text == "count" {
-			return evaluated{json.Number(strconv.FormatInt(count, 10)), deps}, nil
+			return evaluated{json.Number(strconv.FormatInt(count, 10)), deps.sorted()}, nil
 		}
 		if count == 0 {
-			return evaluated{nil, deps}, nil
+			return evaluated{nil, deps.sorted()}, nil
 		}
-		value, err := ratValue(sum)
-		return evaluated{value, deps}, err
+		value, err := ratValue(sum, generalPlaces)
+		return evaluated{value, deps.sorted()}, err
 	case "unary":
-		v, err := evaluate(e.left, t, group, params)
+		v, err := evaluate(ctx, e.left, t, group, params)
 		if err != nil || v.value == nil {
 			return v, err
 		}
@@ -235,14 +269,14 @@ func evaluate(e *expression, t tuple, group []tuple, params map[string]any) (eva
 		if e.text == "-" {
 			n.Neg(n)
 		}
-		v.value, err = ratValue(n)
+		v.value, err = ratValue(n, generalPlaces)
 		return v, err
 	case "binary":
-		left, err := evaluate(e.left, t, group, params)
+		left, err := evaluate(ctx, e.left, t, group, params)
 		if err != nil {
 			return evaluated{}, err
 		}
-		right, err := evaluate(e.right, t, group, params)
+		right, err := evaluate(ctx, e.right, t, group, params)
 		if err != nil {
 			return evaluated{}, err
 		}
@@ -277,7 +311,11 @@ func evaluate(e *expression, t tuple, group []tuple, params map[string]any) (eva
 				}
 				a.Quo(a, b)
 			}
-			value, err := ratValue(a)
+			places := generalPlaces
+			if e.text == "/" {
+				places = divisionPlaces
+			}
+			value, err := ratValue(a, places)
 			return evaluated{value, deps}, err
 		default:
 			cmp, known, err := compareValues(left.value, right.value)
@@ -427,7 +465,7 @@ func (s *Service) executeSQL(ctx context.Context, q QueryRequest) ([]ResultRow, 
 					candidate.rows[alias] = row
 				}
 				candidate.rows[join.alias] = boundRow{table, right}
-				test, err := evaluate(join.on, candidate, nil, q.Parameters)
+				test, err := evaluate(ctx, join.on, candidate, nil, q.Parameters)
 				if err != nil {
 					return nil, err
 				}
@@ -447,7 +485,7 @@ func (s *Service) executeSQL(ctx context.Context, q QueryRequest) ([]ResultRow, 
 		if err = ctx.Err(); err != nil {
 			return nil, err
 		}
-		test, err := evaluate(plan.where, t, nil, q.Parameters)
+		test, err := evaluate(ctx, plan.where, t, nil, q.Parameters)
 		if err != nil {
 			return nil, err
 		}
@@ -476,7 +514,7 @@ func (s *Service) executeSQL(ctx context.Context, q QueryRequest) ([]ResultRow, 
 		for _, t := range tuples {
 			values := []any{}
 			for _, g := range plan.groups {
-				v, err := evaluate(g, t, nil, q.Parameters)
+				v, err := evaluate(ctx, g, t, nil, q.Parameters)
 				if err != nil {
 					return nil, err
 				}
@@ -514,22 +552,31 @@ func (s *Service) executeSQL(ctx context.Context, q QueryRequest) ([]ResultRow, 
 			representative = members[0]
 		}
 		result := ResultRow{Values: map[string]any{}, Columns: map[string][]provenance.Dependency{}, Expressions: map[string]string{}}
-		var rows, predicates []provenance.Dependency
+		var rowSet, predSet, depTotal depSet
 		for _, member := range members {
-			rows = union(rows, rowDeps(member))
-			predicates = union(predicates, member.predicates)
+			rowSet.add(rowDeps(member))
+			predSet.add(member.predicates)
+		}
+		rows, predicates := rowSet.sorted(), predSet.sorted()
+		// Enforce the dependency budget incrementally, before identity work.
+		if totalDeps+rowSet.len()+predSet.len() > s.limits.MaxDependencies {
+			return nil, ErrLimit
 		}
 		for _, p := range plan.selects {
-			v, err := evaluate(p.expression, representative, members, q.Parameters)
+			v, err := evaluate(ctx, p.expression, representative, members, q.Parameters)
 			if err != nil {
 				return nil, err
 			}
 			result.Values[p.alias] = v.value
 			result.Columns[p.alias] = union(v.deps, predicates)
 			result.Expressions[p.alias] = expressionText(p.expression)
-			result.Dependencies = union(result.Dependencies, v.deps)
+			depTotal.add(v.deps)
+			if totalDeps+depTotal.len() > s.limits.MaxDependencies {
+				return nil, ErrLimit
+			}
 		}
-		result.Dependencies = union(result.Dependencies, rows, predicates)
+		depTotal.add(rows, predicates)
+		result.Dependencies = depTotal.sorted()
 		identity := sha256.New()
 		identity.Write(planBytes)
 		if aggregated {
@@ -671,6 +718,7 @@ type resultStream struct {
 	span        *observability.Span
 	rows        []ResultRow
 	index       int
+	returned    int64
 	closed, eof bool
 	err         error
 	coverage    provenance.Coverage
@@ -725,6 +773,9 @@ func (r *resultStream) Next() (ResultRow, error) {
 	}
 	row := r.rows[r.index]
 	r.index++
+	// Deep-copy without canonical re-validation: rows already passed query
+	// limits, and canon's stricter size/digit caps must not fail a stream
+	// whose Query succeeded. UseNumber preserves exact numeric text.
 	data, err := json.Marshal(row)
 	if err != nil {
 		r.err = err
@@ -732,12 +783,15 @@ func (r *resultStream) Next() (ResultRow, error) {
 		return ResultRow{}, err
 	}
 	var copy ResultRow
-	if err = strictJSON(data, &copy); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	decoder.DisallowUnknownFields()
+	if err = decoder.Decode(&copy); err != nil {
 		r.err = err
 		r.span.RecordError(err)
 		return ResultRow{}, err
 	}
-	r.span.Count("rows_returned", 1)
+	r.returned++
 	return copy, nil
 }
 func (r *resultStream) Coverage() provenance.Coverage {
@@ -754,6 +808,9 @@ func (r *resultStream) Close() error {
 	}
 	r.closed = true
 	r.rows = nil
+	if r.returned > 0 {
+		r.span.Count("rows_returned", r.returned)
+	}
 	if !r.eof {
 		r.span.Count("early_closed", 1)
 	}

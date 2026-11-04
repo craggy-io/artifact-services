@@ -186,13 +186,42 @@ func numeric(v any) (float64, bool) {
 	}
 	return 0, false
 }
+func enumMatch(value any, sh Shape) (bool, error) {
+	if len(sh.Enum) == 0 {
+		return true, nil
+	}
+	encoded, err := canon.Marshal(value)
+	if err != nil {
+		return false, err
+	}
+	for _, raw := range sh.Enum {
+		candidate, err := canon.Normalize(raw)
+		if err != nil {
+			return false, err
+		}
+		if bytes.Equal(encoded, candidate) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func checkValue(value any, sh Shape, path string) error {
 	fail := func(message string) error { return fmt.Errorf("%w: %s: %s", ErrValidation, path, message) }
 	if value == nil {
-		if sh.Nullable {
-			return nil
+		if !sh.Nullable {
+			return fail("null not allowed")
 		}
-		return fail("null not allowed")
+		// Nullable waives the type check only; an Enum still constrains null
+		// unless null is itself an enumerated member.
+		match, err := enumMatch(nil, sh)
+		if err != nil {
+			return err
+		}
+		if !match {
+			return fail("enum constraint")
+		}
+		return nil
 	}
 	switch sh.Type {
 	case "string":
@@ -261,25 +290,12 @@ func checkValue(value any, sh Shape, path string) error {
 			return fail("numeric bound")
 		}
 	}
-	if len(sh.Enum) > 0 {
-		encoded, err := canon.Marshal(value)
-		if err != nil {
-			return err
-		}
-		match := false
-		for _, raw := range sh.Enum {
-			candidate, err := canon.Normalize(raw)
-			if err != nil {
-				return err
-			}
-			if bytes.Equal(encoded, candidate) {
-				match = true
-				break
-			}
-		}
-		if !match {
-			return fail("enum constraint")
-		}
+	match, err := enumMatch(value, sh)
+	if err != nil {
+		return err
+	}
+	if !match {
+		return fail("enum constraint")
 	}
 	return nil
 }
@@ -309,7 +325,10 @@ func (s *Service) Validate(ctx context.Context, request ValidationRequest) (repo
 		if request.Encoding != NDJSON {
 			return report, ErrUnsupported
 		}
-		err = s.rows(ctx, request.Data, manifest.Entries[0].Path, definition, func(Row) error { report.Rows++; span.Count("rows_validated", 1); return nil })
+		err = s.rows(ctx, request.Data, manifest.Entries[0].Path, definition, func(Row) error { report.Rows++; return nil })
+		if report.Rows > 0 {
+			span.Count("rows_validated", report.Rows)
+		}
 	case JSON:
 		if request.Encoding != JSONEncoding {
 			return report, ErrUnsupported
@@ -346,7 +365,7 @@ func (s *Service) Publish(ctx context.Context, request PublishRequest) (id artif
 	}
 	m.Metadata = request.Metadata
 	id, err = s.artifacts.PublishValidated(ctx, m, typedclaim.New(string(request.Schema), string(request.Data), ValidatorVersion, request.Encoding))
-	if err == nil {
+	if registered(id, err) {
 		span.Count("typed_published", 1)
 	}
 	return id, err
@@ -391,6 +410,14 @@ func (s *Service) publishFile(ctx context.Context, path string, r io.Reader, met
 	return id, nil
 }
 
+// limitPlusOne returns n+1 saturated at math.MaxInt64 for oversize probes.
+func limitPlusOne(n int64) int64 {
+	if n >= math.MaxInt64 {
+		return math.MaxInt64
+	}
+	return n + 1
+}
+
 func (s *Service) readFile(ctx context.Context, id artifacts.ID, path string, max int64) (data []byte, result error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -400,7 +427,7 @@ func (s *Service) readFile(ctx context.Context, id artifacts.ID, path string, ma
 		return nil, err
 	}
 	defer func() { result = errors.Join(result, r.Close()) }()
-	data, err = io.ReadAll(io.LimitReader(r, max+1))
+	data, err = io.ReadAll(io.LimitReader(r, limitPlusOne(max)))
 	if err != nil {
 		return nil, err
 	}
@@ -418,8 +445,10 @@ func (s *Service) rows(ctx context.Context, id artifacts.ID, path string, d Sche
 		return err
 	}
 	defer func() { result = errors.Join(result, r.Close()) }()
-	scanner := bufio.NewScanner(io.LimitReader(r, s.limits.MaxBytes+1))
-	scanner.Buffer(make([]byte, 4096), s.limits.MaxRowBytes)
+	scanner := bufio.NewScanner(io.LimitReader(r, limitPlusOne(s.limits.MaxBytes)))
+	// bufio's effective token cap is max(MaxRowBytes, cap(buf)); size the
+	// initial buffer no larger than the row limit and check lengths directly.
+	scanner.Buffer(make([]byte, min(4096, max(1, s.limits.MaxRowBytes))), s.limits.MaxRowBytes)
 	seen := map[string]bool{}
 	unique := map[string]map[string]bool{}
 	for _, c := range d.Columns {
@@ -434,6 +463,9 @@ func (s *Service) rows(ctx context.Context, id artifacts.ID, path string, d Sche
 			return err
 		}
 		line := scanner.Bytes()
+		if len(line) > s.limits.MaxRowBytes {
+			return ErrLimit
+		}
 		total += int64(len(line)) + 1
 		if total > s.limits.MaxBytes {
 			return ErrLimit
@@ -478,7 +510,10 @@ func (s *Service) rows(ctx context.Context, id artifacts.ID, path string, d Sche
 		}
 	}
 	if err = scanner.Err(); err != nil {
-		return fmt.Errorf("%w: row read: %w", ErrLimit, err)
+		if errors.Is(err, bufio.ErrTooLong) {
+			return fmt.Errorf("%w: row read: %w", ErrLimit, err)
+		}
+		return err
 	}
 	return ctx.Err()
 }

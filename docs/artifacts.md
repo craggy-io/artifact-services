@@ -103,6 +103,7 @@ package example
 
 import (
     "context"
+    "errors"
     "path/filepath"
     "strings"
 
@@ -111,14 +112,14 @@ import (
     "github.com/craggy-io/artifact-services/storage"
 )
 
-func PublishFile(root string) (artifacts.ID, error) {
+func PublishFile(root string) (id artifacts.ID, err error) {
     physical, err := storage.NewFilesystem(filepath.Join(root, "blobs"))
     if err != nil { return "", err }
     content, err := cas.New(physical, cas.Options{})
     if err != nil { return "", err }
     snapshots, err := artifacts.New(content, artifacts.Options{Root: filepath.Join(root, "catalog")})
     if err != nil { return "", err }
-    defer snapshots.Close()
+    defer func() { err = errors.Join(err, snapshots.Close()) }()
     ctx := context.Background()
     blob, err := content.Put(ctx, strings.NewReader("hello"))
     if err != nil { return "", err }
@@ -142,6 +143,8 @@ retrying the same manifest/classification completes registration without changin
 identity. Get can retrieve canonical known-ID manifests regardless of membership.
 Errors retain underlying CAS/storage/OS causes for errors.Is/errors.As. Missing files
 return ErrNotFound; typed metadata without registration is ErrUnvalidated.
+Operations after Close match ErrClosed; invalid/expired/mismatched cursors match
+ErrCursor (and ErrInvalidQuery); snapshot-capacity failures match ErrLimit.
 
 Registration is immutable and idempotent. Reusing the same ID with a different
 category or accepted claim is ErrConflict. Internal snapshots are omitted by default
@@ -149,7 +152,8 @@ from Search; IncludeInternal selects both. Known-ID reads still work for interna
 artifacts. This is reporting, not access control or deletion. Get/OpenFile inherit CAS
 integrity semantics: full successful EOF verifies content; early Close does not.
 OpenFile tracks actual reads and finishes on Close, including errors; repeated Close
-is idempotent and reads afterward return io.ErrClosedPipe.
+is idempotent and reads afterward return io.ErrClosedPipe. Returned readers
+require serial Read/Close calls, like the underlying CAS readers.
 
 FileQuery selects a normalized whole-directory Prefix, Limit and Cursor. `dir` and
 `dir/` normalize identically; neither matches `directory/`. Entries are sorted by

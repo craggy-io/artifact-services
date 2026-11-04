@@ -44,14 +44,15 @@ type membership struct {
 // catalog. Close releases the exclusive root lease; already-open readers remain
 // caller-owned. Roots must not be shared with another live service/process.
 type Service struct {
-	blobs    cas.Store
-	records  *journal.Store
-	indexed  map[string]bool
-	mu       sync.RWMutex
-	catalog  map[ID]membership
-	closed   bool
-	files    *pager.Cache[Entry]
-	searches *pager.Cache[CatalogItem]
+	blobs     cas.Store
+	records   *journal.Store
+	indexed   map[string]bool
+	mu        sync.RWMutex
+	catalog   map[ID]membership
+	closed    bool
+	closeDone bool
+	files     *pager.Cache[Entry]
+	searches  *pager.Cache[CatalogItem]
 }
 
 var _ Store = (*Service)(nil)
@@ -93,22 +94,31 @@ func New(blobs cas.Store, options Options) (*Service, error) {
 func start(ctx context.Context, op string, key string) (context.Context, *observability.Span) {
 	return observability.Start(ctx, observability.Scope{Layer: "artifacts", Operation: op}, key)
 }
+func closedError() error { return errors.Join(ErrClosed, journal.ErrClosed) }
+
 func (s *Service) requireOpen() error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.closed {
-		return journal.ErrClosed
+		return closedError()
 	}
 	return nil
 }
+
+// Close stops operations and releases the root lease. If lease release fails,
+// a later Close retries it instead of reporting success.
 func (s *Service) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed {
+	if s.closeDone {
 		return nil
 	}
 	s.closed = true
-	return s.records.Close()
+	if err := s.records.Close(); err != nil {
+		return err
+	}
+	s.closeDone = true
+	return nil
 }
 
 func (s *Service) Publish(ctx context.Context, manifest Manifest) (ID, error) {
@@ -192,19 +202,26 @@ func (s *Service) publish(ctx context.Context, input Manifest, claim *acceptedCl
 	digest := sha256.Sum256(encoded)
 	id = ID("sha256:" + hex.EncodeToString(digest[:]))
 	record.ID = id
-	// Verify every referenced stream through EOF, even when content is already registered.
+	// Verify every distinct referenced stream through EOF, even when content is
+	// already registered; repeated entries for one blob reuse its verified size.
+	verified := map[cas.ID]int64{}
 	for _, entry := range manifest.Entries {
 		if err := ctx.Err(); err != nil {
 			return id, err
 		}
-		reader, err := s.blobs.Open(support, entry.Content)
-		if err != nil {
-			return id, err
-		}
-		size, readErr := io.Copy(io.Discard, reader)
-		err = errors.Join(readErr, reader.Close())
-		if err != nil {
-			return id, err
+		size, seen := verified[entry.Content]
+		if !seen {
+			reader, err := s.blobs.Open(support, entry.Content)
+			if err != nil {
+				return id, err
+			}
+			var readErr error
+			size, readErr = io.Copy(io.Discard, reader)
+			err = errors.Join(readErr, reader.Close())
+			if err != nil {
+				return id, err
+			}
+			verified[entry.Content] = size
 		}
 		if size != entry.Size {
 			return id, fmt.Errorf("%w: size mismatch for %q", ErrInvalidManifest, entry.Path)
@@ -223,19 +240,26 @@ func (s *Service) publish(ctx context.Context, input Manifest, claim *acceptedCl
 	if err != nil {
 		return id, errors.Join(putErr, err)
 	}
-	// The lock serializes registration and projection only; no callbacks run here.
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		return id, errors.Join(putErr, journal.ErrClosed)
+	// Append (including its file sync) runs outside the service lock so one slow
+	// registration does not stall concurrent reads; the journal's own mutex and
+	// idempotent/conflict semantics serialize writers. The lock covers only the
+	// in-memory projection.
+	if err := s.requireOpen(); err != nil {
+		return id, errors.Join(putErr, err)
 	}
 	_, reused, err = s.records.Append(ctx, string(id), serialized)
+	if errors.Is(err, journal.ErrClosed) {
+		err = errors.Join(closedError(), err)
+	}
 	var commit *journal.CommitError
 	registered = err == nil || (errors.As(err, &commit) && commit.Committed)
 	if registered {
-		s.catalog[id] = record
+		s.mu.Lock()
+		if !s.closed {
+			s.catalog[id] = record
+		}
+		s.mu.Unlock()
 	}
-	s.mu.Unlock()
 	if errors.Is(err, journal.ErrConflict) {
 		err = errors.Join(ErrConflict, err)
 	}
@@ -388,7 +412,7 @@ func (s *Service) Rebuild(ctx context.Context) (resultErr error) {
 		s.mu.Lock()
 		if s.closed {
 			s.mu.Unlock()
-			return journal.ErrClosed
+			return closedError()
 		}
 		_, current := s.records.Snapshot()
 		if current == watermark {

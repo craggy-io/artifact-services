@@ -142,7 +142,7 @@ func (s *Service) Materialize(ctx context.Context, request MaterializeRequest) (
 	}
 	defer cleanupTemp(details, &result)
 	rowEncoder := json.NewEncoder(rows)
-	detailEncoder := json.NewEncoder(details)
+	detailEncoder := json.NewEncoder(&limitedWriter{w: details, left: s.limits.MaxBytes})
 	bytesWritten := int64(0)
 	for {
 		row, err := stream.Next()
@@ -201,7 +201,7 @@ func (s *Service) Materialize(ctx context.Context, request MaterializeRequest) (
 	encoder := json.NewEncoder(mapping)
 	scanner := bufio.NewScanner(details)
 	scanner.Buffer(make([]byte, 4096), 16<<20)
-	columnDeps := map[string][]provenance.Dependency{}
+	columnDeps := map[string]*depSet{}
 	expressions := map[string]string{}
 	mappingBytes := int64(0)
 	emit := func(m provenance.Mapping) error {
@@ -245,15 +245,23 @@ func (s *Service) Materialize(ctx context.Context, request MaterializeRequest) (
 				dependency.Ref.Row = ""
 				converted = append(converted, dependency)
 			}
-			columnDeps[column] = union(columnDeps[column], converted)
+			set, ok := columnDeps[column]
+			if !ok {
+				set = &depSet{}
+				columnDeps[column] = set
+			}
+			set.add(converted)
 			expressions[column] = row.Expressions[column]
 		}
 	}
 	if err = scanner.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			return out, fmt.Errorf("%w: evidence row: %w", ErrLimit, err)
+		}
 		return out, err
 	}
 	for _, column := range sortedKeys(columnDeps) {
-		if err = emit(provenance.Mapping{Output: provenance.Ref{Artifact: string(out.Artifact), Revision: request.OutputRevision, Schema: string(request.Schema), Column: column}, Inputs: columnDeps[column], Expression: expressions[column]}); err != nil {
+		if err = emit(provenance.Mapping{Output: provenance.Ref{Artifact: string(out.Artifact), Revision: request.OutputRevision, Schema: string(request.Schema), Column: column}, Inputs: columnDeps[column].sorted(), Expression: expressions[column]}); err != nil {
 			return out, err
 		}
 	}
@@ -271,4 +279,20 @@ func (s *Service) Materialize(ctx context.Context, request MaterializeRequest) (
 }
 func cleanupTemp(file *os.File, result *error) {
 	*result = errors.Join(*result, file.Close(), os.Remove(file.Name()))
+}
+
+// limitedWriter fails with ErrLimit once the byte budget is exhausted, so a
+// staging file is bounded as written rather than after the fact.
+type limitedWriter struct {
+	w    io.Writer
+	left int64
+}
+
+func (w *limitedWriter) Write(p []byte) (int, error) {
+	if int64(len(p)) > w.left {
+		return 0, ErrLimit
+	}
+	n, err := w.w.Write(p)
+	w.left -= int64(n)
+	return n, err
 }

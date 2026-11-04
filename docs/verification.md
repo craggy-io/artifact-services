@@ -5,7 +5,7 @@
 Requires Go 1.27 or newer, with no external dependencies.
 
 ```sh
-go fmt ./...
+test -z "$(gofmt -l .)"
 go test ./...
 go test -race ./...
 go vet ./...
@@ -36,7 +36,8 @@ finally { Remove-Item Env:ARTIFACT_SERVICES_LARGE_TEST }
 The test checks at least 2 GiB free on the temporary volume, generates deterministic
 bytes as a stream, verifies SHA-256 and exact byte counts, asserts publication,
 reader completion, progress/metrics and temporary cleanup, then removes its owned
-fixture. Routine tests skip this trial. No whole-blob buffer is allocated.
+fixture. Routine tests skip this trial. No whole-blob buffer is allocated; the
+trial fails if sampled `HeapAlloc` grows more than 256 MiB over its baseline.
 
 Measured on 2026-11-04, Go 1.27.3 windows/amd64, with context observation enabled:
 

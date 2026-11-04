@@ -2,7 +2,7 @@
 
 [Project](../README.md) · [Documentation index](README.md)
 
-This walkthrough is exercised by [the cross-layer integration tests](../integration/system_test.go),
+The main flows in this walkthrough are exercised by [the cross-layer integration tests](../integration/system_test.go),
 using real filesystem storage, CAS, artifacts, Objects, and lineage with shared observation:
 
 ```sh
@@ -65,8 +65,9 @@ can maintain their own revision history. No mutable valid flag rewrites old data
 ## 5. Combine A and B into C while retaining separate histories
 
 Suppose table A has revision A-1 and table/view B has revision B-1. A query execution
-pins A-1 and B-1, not just their content IDs. Any requested latest labels are resolved
-before execution and those exact resolutions are recorded. A and B keep their own
+pins A-1 and B-1, not just their content IDs. Unresolved "latest" labels are not
+accepted as pins; callers resolve floating names externally before execution
+and record those exact resolutions (see [Objects](objects.md)). A and B keep their own
 histories; output C begins or continues a distinct history. Later C revisions link
 to earlier C revisions, while derivation links cross to the selected A/B revisions.
 

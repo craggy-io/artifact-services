@@ -10,8 +10,10 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	"github.com/craggy-io/artifact-services/observability"
@@ -24,6 +26,7 @@ type ID string
 var (
 	ErrInvalidID = errors.New("cas: invalid content ID")
 	ErrIntegrity = errors.New("cas: content digest mismatch")
+	ErrLimit     = errors.New("cas: content exceeds configured maximum size")
 )
 
 // ParseID validates the supported algorithm and canonical digest spelling.
@@ -56,8 +59,18 @@ type PutError struct {
 	Err       error
 }
 
-func (e *PutError) Error() string { return "cas: put: " + e.Err.Error() }
-func (e *PutError) Unwrap() error { return e.Err }
+func (e *PutError) Error() string {
+	if e == nil || e.Err == nil {
+		return "cas: put"
+	}
+	return "cas: put: " + e.Err.Error()
+}
+func (e *PutError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
 
 // Store is a streaming content-addressable store. Returned readers are owned by
 // callers and verified only on successful EOF, never merely on Open or early Close.
@@ -69,13 +82,21 @@ type Store interface {
 
 // Options configures staging. Empty TempDir uses the OS temporary directory.
 // A configured directory must already exist; it is not created by New.
-type Options struct{ TempDir string }
+// MaxBytes optionally caps a single Put's content size (0 means unlimited:
+// callers accepting untrusted streams should set it or wrap sources with
+// io.LimitReader, since staging otherwise spools until the volume fills).
+type Options struct {
+	TempDir  string
+	MaxBytes int64
+}
 
 // Service implements Store over a storage backend. It is safe for concurrent
 // operations. The backend/root must be exclusively managed as immutable storage.
+// The zero value is not usable; construct with New.
 type Service struct {
-	blobs   storage.Store
-	tempDir string
+	blobs    storage.Store
+	tempDir  string
+	maxBytes int64
 }
 
 var _ Store = (*Service)(nil)
@@ -83,8 +104,11 @@ var _ Store = (*Service)(nil)
 // New constructs a CAS without creating files. A relative TempDir is resolved
 // now; its existence and permissions are checked when a write stages data.
 func New(blobs storage.Store, options Options) (*Service, error) {
-	if blobs == nil {
+	if blobs == nil || isNilValue(blobs) {
 		return nil, errors.New("cas: nil storage")
+	}
+	if options.MaxBytes < 0 {
+		return nil, errors.New("cas: negative MaxBytes")
 	}
 	dir := options.TempDir
 	if dir != "" {
@@ -94,7 +118,23 @@ func New(blobs storage.Store, options Options) (*Service, error) {
 			return nil, err
 		}
 	}
-	return &Service{blobs: blobs, tempDir: dir}, nil
+	return &Service{blobs: blobs, tempDir: dir, maxBytes: options.MaxBytes}, nil
+}
+
+func isNilValue(v any) bool {
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Chan, reflect.Func, reflect.Interface:
+		return rv.IsNil()
+	}
+	return false
+}
+
+func (s *Service) requireBackend() error {
+	if s == nil || s.blobs == nil {
+		return errors.New("cas: Service not constructed with New")
+	}
+	return nil
 }
 
 func start(ctx context.Context, op string, key string) (context.Context, *observability.Span) {
@@ -135,6 +175,9 @@ func (s *Service) put(ctx context.Context, source io.Reader, removeTemp func(str
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
+	if err := s.requireBackend(); err != nil {
+		return result, err
+	}
 	if source == nil {
 		return result, errors.New("cas: nil source")
 	}
@@ -149,9 +192,20 @@ func (s *Service) put(ctx context.Context, source io.Reader, removeTemp func(str
 		}
 	}()
 	digest := sha256.New()
+	if s.maxBytes > 0 {
+		limit := s.maxBytes + 1
+		if limit <= 0 { // saturated at math.MaxInt64
+			limit = math.MaxInt64
+		}
+		source = io.LimitReader(source, limit)
+	}
 	source = &countedReader{ctx: ctx, source: source, span: span}
-	if _, err := io.Copy(io.MultiWriter(spool, digest), source); err != nil {
+	written, err := io.Copy(io.MultiWriter(spool, digest), source)
+	if err != nil {
 		return result, err
+	}
+	if s.maxBytes > 0 && written > s.maxBytes {
+		return result, ErrLimit
 	}
 	if err := ctx.Err(); err != nil {
 		return result, err
@@ -195,22 +249,37 @@ func nonDuplicateError(err error) error {
 	}
 	return err
 }
+
+// onlyDuplicate walks the unwrap graph iteratively with a node budget so a
+// cyclic or pathological backend error cannot recurse without bound.
 func onlyDuplicate(err error) bool {
-	if err == nil {
-		return true
-	}
-	if group, ok := err.(interface{ Unwrap() []error }); ok {
-		for _, cause := range group.Unwrap() {
-			if !onlyDuplicate(cause) {
-				return false
+	const maxNodes = 1000
+	stack := []error{err}
+	for seen := 0; len(stack) > 0; {
+		seen++
+		if seen > maxNodes {
+			return false
+		}
+		cur := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if cur == nil {
+			continue
+		}
+		if group, ok := cur.(interface{ Unwrap() []error }); ok {
+			stack = append(stack, group.Unwrap()...)
+			continue
+		}
+		if wrapper, ok := cur.(interface{ Unwrap() error }); ok {
+			if inner := wrapper.Unwrap(); inner != nil {
+				stack = append(stack, inner)
+				continue
 			}
 		}
-		return true
+		if !errors.Is(cur, storage.ErrAlreadyExists) && !errors.Is(cur, fs.ErrExist) {
+			return false
+		}
 	}
-	if wrapper, ok := err.(interface{ Unwrap() error }); ok {
-		return onlyDuplicate(wrapper.Unwrap())
-	}
-	return errors.Is(err, storage.ErrAlreadyExists) || errors.Is(err, fs.ErrExist)
+	return true
 }
 
 func (s *Service) verifyExisting(ctx context.Context, id ID) (bool, error) {
@@ -236,6 +305,9 @@ func (s *Service) Open(ctx context.Context, id ID) (reader io.ReadCloser, result
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if err := s.requireBackend(); err != nil {
+		return nil, err
+	}
 	key, err := storageKey(id)
 	if err != nil {
 		return nil, err
@@ -253,6 +325,9 @@ func (s *Service) Exists(ctx context.Context, id ID) (exists bool, resultErr err
 	ctx, span := start(ctx, "exists", string(id))
 	defer func() { span.End(resultErr) }()
 	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if err := s.requireBackend(); err != nil {
 		return false, err
 	}
 	key, err := storageKey(id)

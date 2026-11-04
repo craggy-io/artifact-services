@@ -23,8 +23,18 @@ type PutError struct {
 	Err       error
 }
 
-func (e *PutError) Error() string { return "storage: put: " + e.Err.Error() }
-func (e *PutError) Unwrap() error { return e.Err }
+func (e *PutError) Error() string {
+	if e == nil || e.Err == nil {
+		return "storage: put"
+	}
+	return "storage: put: " + e.Err.Error()
+}
+func (e *PutError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
 
 // Store stores opaque bytes under caller-supplied keys. Implementations must be
 // safe for concurrent use, including independent instances sharing a backend.

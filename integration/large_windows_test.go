@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -32,9 +33,12 @@ func TestLargeCAS1GiB(t *testing.T) {
 	}
 	c := new(observability.Collector)
 	finals := map[string]observability.Event{}
+	var finalsMu sync.Mutex
 	ctx := observability.With(context.Background(), observability.Options{Collector: c, ProgressInterval: 25 * time.Millisecond, Observer: func(e observability.Event) {
 		if e.Final {
+			finalsMu.Lock()
 			finals[e.Scope.Layer+"/"+e.Scope.Operation] = e
+			finalsMu.Unlock()
 		}
 	}})
 	var result cas.PutResult
@@ -42,9 +46,15 @@ func TestLargeCAS1GiB(t *testing.T) {
 		if result.ID != cas.ID("sha256:"+digest) || result.Size != size || result.Reused {
 			t.Fatal(result)
 		}
+		finalsMu.Lock()
+		finalCopy := make(map[string]observability.Event, len(finals))
+		for k, v := range finals {
+			finalCopy[k] = v
+		}
+		finalsMu.Unlock()
 		for _, layer := range []string{"storage", "cas"} {
 			for _, op := range []string{"put", "open"} {
-				e := finals[layer+"/"+op]
+				e := finalCopy[layer+"/"+op]
 				if !e.Final || e.Bytes != size || e.Err != nil {
 					t.Fatal(e)
 				}

@@ -287,13 +287,18 @@ func TestMaterializeMappingsAndTypedClaims(t *testing.T) {
 	}
 }
 func TestMaterializeReportsCommittedArtifactWhenEvidenceTooLarge(t *testing.T) {
-	f := setup(t, Options{MaxBytes: 256})
+	// MaxBytes admits the staged per-row details but not the expanded mapping
+	// evidence, so the typed artifact is published before evidence fails.
+	f := setup(t, Options{MaxBytes: 2048})
 	schema := f.schema(t, tableSchema(false))
 	data := f.typed(t, schema, NDJSON, `{"id":"r","values":{"key":"x","amount":1}}`)
 	out, err := f.s.Materialize(f.ctx, MaterializeRequest{Schema: schema, OutputRevision: "new", Query: QueryRequest{Language: SQL, Text: "SELECT t.label AS key, t.amount AS amount FROM t", Inputs: []Input{{Alias: "t", Artifact: data, Revision: "old"}}, RequireComplete: true}})
 	var partial *MaterializeError
 	if !errors.Is(err, ErrLimit) || !errors.As(err, &partial) || out.Artifact == "" || partial.Artifact != out.Artifact || out.Evidence != "" {
 		t.Fatal(out, err)
+	}
+	if !out.ArtifactRegistered || !partial.ArtifactRegistered || out.EvidenceRegistered || partial.EvidenceRegistered {
+		t.Fatal("stage flags", out, partial.Materialized)
 	}
 	m, err := f.a.Get(f.ctx, out.Artifact)
 	if err != nil || len(m.Entries) != 1 {

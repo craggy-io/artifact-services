@@ -118,8 +118,8 @@ The storage span has the application span's ID as its ParentID. Derived contexts
 (including cancellation/deadline contexts) inherit configuration and linkage.
 Concurrent children started with the same parent context are siblings with unique
 IDs. Parents do not automatically aggregate/end children or infer their semantic
-outcomes. Future layers can report counters such as `dedup` explicitly; no CAS or
-artifact functionality is supplied by observation itself.
+outcomes. Higher layers report counters such as `published`/`reused` explicitly;
+observation itself supplies no CAS or artifact functionality.
 
 ## Semantics, errors, and limits
 
@@ -157,7 +157,9 @@ Internal; `Snapshot(SnapshotOptions{IncludeInternal: true})` sums both buckets p
 scope. The latter is a diagnostic work view, not a unique-user-payload view.
 No data predating attachment, or from contexts with collection disabled, can be
 recovered. Buckets store bounded scope/counter labels, not event histories or keys;
-collector lifetime/reset-by-replacement is controlled by the application.
+retained labels are capped (labels beyond the cap are dropped, so names must stay
+bounded). `Collector.Reset` clears retained totals; otherwise collector lifetime
+is controlled by the application.
 
 Spans report their own work; child bytes/counters are never automatically summed
 into user parents. Orchestration must count logical user payload/artifact outcomes
@@ -168,7 +170,8 @@ payload total. Parent elapsed time and metric Duration remain **inclusive** of
 internal work. Parent errors remain visible even when caused by internal work.
 Classification filters reporting only; it does not alter I/O, cancellation,
 validation, publication, or error propagation. The matching [discovery policy](queries.md#default-discovery-classification)
-remains a proposal because catalog/lineage implementations do not exist yet.
+is implemented by catalog and lineage discovery (internal work is excluded
+unless `IncludeInternal` is set).
 
 ### Events and lifecycle
 

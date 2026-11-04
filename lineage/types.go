@@ -17,6 +17,8 @@ var (
 	ErrConflict            = errors.New("lineage: conflicting record identity")
 	ErrUnsupportedSelector = errors.New("lineage: detailed selector validator required")
 	ErrLimit               = errors.New("lineage: evidence or traversal work limit")
+	ErrClosed              = errors.New("lineage: service closed")
+	ErrCursor              = errors.New("lineage: invalid, expired or mismatched cursor")
 )
 
 type RecordError struct {
@@ -25,8 +27,18 @@ type RecordError struct {
 	Err       error
 }
 
-func (e *RecordError) Error() string { return "lineage: record: " + e.Err.Error() }
-func (e *RecordError) Unwrap() error { return e.Err }
+func (e *RecordError) Error() string {
+	if e == nil || e.Err == nil {
+		return "lineage: record"
+	}
+	return "lineage: record: " + e.Err.Error()
+}
+func (e *RecordError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
 
 // Evidence identifies immutable NDJSON provenance.Mapping records. Coverage must
 // be declared explicitly. Supporting artifacts need not be visible in discovery.

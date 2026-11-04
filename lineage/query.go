@@ -35,7 +35,10 @@ func queryValid(q Query) error {
 			return ErrInvalid
 		}
 	}
-	if !validDependencyRole(q.DependencyRole) || q.DependencyRole != "" && (q.Ref == nil || q.Role == "snapshot" || q.Role == "parent") {
+	if !validDependencyRole(q.DependencyRole) || q.DependencyRole != "" && (q.Ref == nil || q.Role == "snapshot" || q.Role == "parent" || q.Role == "output" || q.Role == "from" || q.Role == "to") {
+		return ErrInvalid
+	}
+	if q.Activity != "" && (q.Kind == "activity" || q.ActivityKind != "") {
 		return ErrInvalid
 	}
 	if q.Limit < 0 || q.Limit > 1000 {
@@ -77,6 +80,14 @@ func (s *Service) List(ctx context.Context, q Query) (page Page, result error) {
 	if err := queryValid(q); err != nil {
 		return page, err
 	}
+	if q.Cursor == "" && q.Ref != nil && q.Ref.Detailed() {
+		if s.options.ValidateSelector == nil {
+			return page, ErrUnsupportedSelector
+		}
+		if err := s.options.ValidateSelector(observability.WithInternal(ctx), *q.Ref); err != nil {
+			return page, err
+		}
+	}
 	if q.Limit == 0 {
 		q.Limit = 100
 	}
@@ -89,6 +100,13 @@ func (s *Service) List(ctx context.Context, q Query) (page Page, result error) {
 		}
 		out := []Record{}
 		work := 0
+		scanned := int64(0)
+		defer func() {
+			if scanned > 0 {
+				span.Count("scanned", scanned)
+			}
+		}()
+		budget := &mappingBudget{}
 		for _, p := range values {
 			if err := ctx.Err(); err != nil {
 				return nil, err
@@ -140,14 +158,14 @@ func (s *Service) List(ctx context.Context, q Query) (page Page, result error) {
 						visit("to", e.To)
 					}
 					if v := r.Revision; v != nil {
-						visit("snapshot", provenance.Ref{Artifact: string(v.Artifact)})
+						visit("snapshot", provenance.Ref{Artifact: string(v.Artifact), Revision: string(r.ID)})
 						for _, parent := range v.Parents {
 							visit("parent", provenance.Ref{Revision: string(parent)})
 						}
 					}
 				}
-				if !match && (q.Ref.Detailed() || q.DependencyRole != "") {
-					err = s.eachMapping(ctx, r, func(_ int, _ Evidence, m provenance.Mapping) error {
+				if !match && (q.Role == "" || q.Role == "input" || q.Role == "output") {
+					err = s.eachMappingBudget(ctx, r, budget, func(_ int, _ Evidence, m provenance.Mapping) error {
 						work += len(m.Inputs) + 1
 						if work > 100000 {
 							return ErrLimit
@@ -167,7 +185,7 @@ func (s *Service) List(ctx context.Context, q Query) (page Page, result error) {
 					}
 				}
 			}
-			span.Count("scanned", 1)
+			scanned++
 			if match {
 				out = append(out, r)
 			}
@@ -208,6 +226,7 @@ func normalizeTraversal(q *TraversalQuery) error {
 	if len(q.Kinds) > 32 {
 		return ErrLimit
 	}
+	q.Kinds = append([]string(nil), q.Kinds...)
 	sort.Strings(q.Kinds)
 	for i, k := range q.Kinds {
 		if k == "" || (i > 0 && k == q.Kinds[i-1]) {
@@ -298,6 +317,7 @@ func (s *Service) traverseSnapshot(ctx context.Context, q TraversalQuery) ([]tra
 		internal bool
 	}
 	adjacency := map[provenance.Ref][]candidate{}
+	budget := &mappingBudget{}
 	total := 0
 	workBytes := 0
 	coverages := []provenance.Coverage{}
@@ -347,7 +367,7 @@ func (s *Service) traverseSnapshot(ctx context.Context, q TraversalQuery) ([]tra
 		}
 		if selected["derived-from"] && (q.Root.Detailed() || q.DependencyRole != "") {
 
-			err := s.eachMapping(ctx, r, func(index int, e Evidence, m provenance.Mapping) error {
+			err := s.eachMappingBudget(ctx, r, budget, func(index int, e Evidence, m provenance.Mapping) error {
 				coverageID := string(r.ID) + "/" + string(e.Artifact) + "/" + e.Path
 				refs := []provenance.Ref{m.Output}
 				for _, d := range m.Inputs {
@@ -374,7 +394,7 @@ func (s *Service) traverseSnapshot(ctx context.Context, q TraversalQuery) ([]tra
 					if r.Relationship != nil {
 						activity = r.Relationship.Activity
 					}
-					if err := add(Edge{ID: fmt.Sprintf("%s/mapping/%d/%d", r.ID, index, i), Kind: "derived-from", From: m.Output, To: d.Ref, Activity: activity, DependencyRole: d.Role, Evidence: &copy, Expression: m.Expression}, false); err != nil {
+					if err := add(Edge{ID: fmt.Sprintf("%s/mapping/%d/%d", r.ID, index, i), Kind: "derived-from", From: m.Output, To: d.Ref, Activity: activity, DependencyRole: d.Role, Evidence: &copy, Expression: m.Expression}, internal); err != nil {
 						return err
 					}
 				}
@@ -397,7 +417,14 @@ func (s *Service) traverseSnapshot(ctx context.Context, q TraversalQuery) ([]tra
 	root := resolve(q.Root)
 	queue := []Node{{Ref: root, Depth: 0}}
 	seenNodes := map[provenance.Ref]bool{root: true}
-	seenEdges := map[string]bool{}
+	// Edge IDs join record IDs with '/', and record IDs may themselves contain
+	// '/', so identity must include the resolved endpoints, not just the ID text.
+	type edgeKey struct {
+		kind, id string
+		from, to provenance.Ref
+	}
+	keyOf := func(e Edge) edgeKey { return edgeKey{e.Kind, e.ID, e.From, e.To} }
+	seenEdges := map[edgeKey]bool{}
 	nodes := []Node{}
 	edges := []Edge{}
 	truncated := false
@@ -446,17 +473,20 @@ func (s *Service) traverseSnapshot(ctx context.Context, q TraversalQuery) ([]tra
 			}
 		}
 		if node.Depth >= q.MaxDepth {
-			if len(adjacency[node.Ref]) > 0 {
-				truncated = true
-				if reason == "" {
-					reason = "depth"
+			for _, c := range adjacency[node.Ref] {
+				if !seenEdges[keyOf(c.edge)] {
+					truncated = true
+					if reason == "" {
+						reason = "depth"
+					}
+					break
 				}
 			}
 			continue
 		}
 		for _, c := range adjacency[node.Ref] {
 			e := c.edge
-			identity := e.Kind + ":" + e.ID
+			identity := keyOf(e)
 			if seenEdges[identity] {
 				continue
 			}
@@ -529,7 +559,7 @@ func (s *Service) traverseSnapshot(ctx context.Context, q TraversalQuery) ([]tra
 
 func queryFailure(err error) error {
 	if errors.Is(err, pager.ErrCursor) {
-		return errors.Join(ErrInvalid, err)
+		return errors.Join(ErrCursor, ErrInvalid, err)
 	}
 	if errors.Is(err, pager.ErrCapacity) {
 		return errors.Join(ErrLimit, err)
