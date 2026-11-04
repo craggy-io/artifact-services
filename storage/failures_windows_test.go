@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"os"
@@ -68,12 +69,12 @@ func TestWindowsPermissionDenied(t *testing.T) {
 			t.Fatal(err)
 		}
 		denyFixtureAccess(t, shard, "WD")
-		err := s.Put("abcd", strings.NewReader("data"))
+		err := s.Put(context.Background(), "abcd", strings.NewReader("data"))
 		var pathErr *fs.PathError
 		if !errors.Is(err, fs.ErrPermission) || !errors.As(err, &pathErr) {
 			t.Fatalf("expected OS permission error, got %v", err)
 		}
-		if exists, err := s.Exists("abcd"); exists || err != nil {
+		if exists, err := s.Exists(context.Background(), "abcd"); exists || err != nil {
 			t.Fatalf("failed write published: %v, %v", exists, err)
 		}
 		assertNoPending(t, root)
@@ -82,7 +83,7 @@ func TestWindowsPermissionDenied(t *testing.T) {
 		s, root := newTestStore(t)
 		assertRoundTrip(t, s, "abcd")
 		denyFixtureAccess(t, filepath.Join(root, "ab", "abcd"), "RD")
-		r, err := s.Open("abcd")
+		r, err := s.Open(context.Background(), "abcd")
 		if r != nil {
 			r.Close()
 		}

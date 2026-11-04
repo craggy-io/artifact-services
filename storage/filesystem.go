@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -47,7 +48,26 @@ func (s *Filesystem) blobPath(key string) (string, error) {
 // Put writes, syncs and closes a temporary file before publishing a hard link.
 // Cleanup failures are joined with the operation error; a cleanup failure after
 // publication returns an error even though the complete blob is already visible.
-func (s *Filesystem) Put(key string, source io.Reader) (result error) {
+func (s *Filesystem) Put(ctx context.Context, key string, source io.Reader) (result error) {
+	return s.put(ctx, key, source, os.Remove)
+}
+
+// removeTemp is injected only by package tests to exercise cleanup failures.
+func (s *Filesystem) put(ctx context.Context, key string, source io.Reader, removeTemp func(string) error) (result error) {
+	ctx, span := startOperation(ctx, "put", key)
+	published := false
+	defer func() {
+		if result != nil {
+			result = &PutError{Published: published, Err: result}
+		}
+		if published {
+			span.Count("published", 1)
+		}
+		span.End(result)
+	}()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	path, err := s.blobPath(key)
 	if err != nil {
 		return err
@@ -68,11 +88,14 @@ func (s *Filesystem) Put(key string, source io.Reader) (result error) {
 		if !closed {
 			result = errors.Join(result, f.Close())
 		}
-		if err := os.Remove(f.Name()); err != nil {
+		if err := removeTemp(f.Name()); err != nil {
 			result = errors.Join(result, fmt.Errorf("storage: temporary cleanup: %w", err))
 		}
 	}()
-	if _, err := io.Copy(f, source); err != nil {
+	if _, err := io.Copy(contextWriter{ctx: ctx, dest: f}, &streamReader{ctx: ctx, base: source, span: span}); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if err := f.Sync(); err != nil {
@@ -83,17 +106,30 @@ func (s *Filesystem) Put(key string, source io.Reader) (result error) {
 	if err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := os.Link(f.Name(), path); err != nil {
 		if errors.Is(err, fs.ErrExist) {
 			return errors.Join(ErrAlreadyExists, err)
 		}
 		return err
 	}
+	published = true
 	return nil
 }
 
 // Open opens a published blob. It never exposes a pending write.
-func (s *Filesystem) Open(key string) (io.ReadCloser, error) {
+func (s *Filesystem) Open(ctx context.Context, key string) (reader io.ReadCloser, result error) {
+	ctx, span := startOperation(ctx, "open", key)
+	defer func() {
+		if result != nil {
+			span.End(result)
+		}
+	}()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	path, err := s.blobPath(key)
 	if err != nil {
 		return nil, err
@@ -108,11 +144,19 @@ func (s *Filesystem) Open(key string) (io.ReadCloser, error) {
 	if err := requireRegular(f.Stat()); err != nil {
 		return nil, errors.Join(err, f.Close())
 	}
-	return f, nil
+	if err := ctx.Err(); err != nil {
+		return nil, errors.Join(err, f.Close())
+	}
+	return &blobReader{streamReader: streamReader{ctx: ctx, base: f, span: span}, closer: f}, nil
 }
 
 // Exists reports whether a published regular blob exists.
-func (s *Filesystem) Exists(key string) (bool, error) {
+func (s *Filesystem) Exists(ctx context.Context, key string) (exists bool, result error) {
+	ctx, span := startOperation(ctx, "exists", key)
+	defer func() { span.End(result) }()
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	path, err := s.blobPath(key)
 	if err != nil {
 		return false, err
