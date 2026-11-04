@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="640" viewBox="0 0 1440 640" role="img" aria-labelledby="title desc">
+<title id="title">Artifact Services layer architecture</title>
+<desc id="desc">Objects and Lineage are peers depending on Artifacts, which depends on CAS, which depends on Storage. Shared context and observability span every layer. Objects owns schemas and content-query adapters; lineage stores generic provenance and row-column references. This is an architectural design, not an implementation status chart.</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1 L9 5 L1 9" fill="none" stroke="#FFB547" stroke-width="1.5"/></marker></defs>
+<rect width="1440" height="640" rx="20" fill="#111A20"/>
+<g font-family="'JetBrains Mono', Consolas, 'Liberation Mono', monospace">
+
+<text x="40" y="53" font-size="28" fill="#FFB547" font-weight="700" text-anchor="start">&gt; ARTIFACT SERVICES</text>
+<text x="40" y="87" font-size="22" fill="#E4ECE7" font-weight="400" text-anchor="start">Typed meaning to immutable bytes</text>
+<text x="1400" y="53" font-size="18" fill="#E4ECE7" font-weight="400" text-anchor="end">LAYER ARCHITECTURE</text>
+<path d="M40 111 H1400" fill="none" stroke="#2A2F2C" stroke-width="2" />
+<text x="40" y="145" font-size="17" fill="#FFB547" font-weight="400" text-anchor="start">01 / MEANING &amp; HISTORY</text>
+<text x="480" y="145" font-size="17" fill="#FFB547" font-weight="400" text-anchor="start">02 / SNAPSHOTS</text>
+<text x="810" y="145" font-size="17" fill="#FFB547" font-weight="400" text-anchor="start">03 / IDENTITY</text>
+<text x="1110" y="145" font-size="17" fill="#FFB547" font-weight="400" text-anchor="start">04 / PERSISTENCE</text>
+<rect x="40" y="167" width="355" height="143" rx="12" fill="#16222A" stroke="#4A3F2C" stroke-width="1.5"/>
+<path d="M62 189 H96" fill="none" stroke="#FFB547" stroke-width="3" />
+<text x="62" y="227" font-size="30" fill="#E4ECE7" font-weight="700" text-anchor="start">Objects</text>
+<text x="62" y="263" font-size="20" fill="#E4ECE7" font-weight="400" text-anchor="start">Schemas / validation</text>
+<text x="62" y="293" font-size="20" fill="#E4ECE7" font-weight="400" text-anchor="start">SQL + JSON adapters</text>
+<rect x="40" y="330" width="355" height="143" rx="12" fill="#16222A" stroke="#4A3F2C" stroke-width="1.5"/>
+<path d="M62 352 H96" fill="none" stroke="#FFB547" stroke-width="3" />
+<text x="62" y="390" font-size="30" fill="#E4ECE7" font-weight="700" text-anchor="start">Lineage</text>
+<text x="62" y="426" font-size="20" fill="#E4ECE7" font-weight="400" text-anchor="start">Provenance / revisions</text>
+<text x="62" y="456" font-size="20" fill="#E4ECE7" font-weight="400" text-anchor="start">Row-column references</text>
+<rect x="480" y="217" width="250" height="210" rx="12" fill="#16222A" stroke="#4A3F2C" stroke-width="1.5"/>
+<path d="M502 239 H536" fill="none" stroke="#FFB547" stroke-width="3" />
+<text x="502" y="277" font-size="30" fill="#E4ECE7" font-weight="700" text-anchor="start">Artifacts</text>
+<text x="502" y="313" font-size="20" fill="#E4ECE7" font-weight="400" text-anchor="start">Immutable snapshots</text>
+<text x="502" y="343" font-size="20" fill="#E4ECE7" font-weight="400" text-anchor="start">Files / manifests</text>
+<text x="502" y="373" font-size="20" fill="#E4ECE7" font-weight="400" text-anchor="start">Catalog discovery</text>
+<rect x="810" y="217" width="220" height="210" rx="12" fill="#16222A" stroke="#4A3F2C" stroke-width="1.5"/>
+<path d="M832 239 H866" fill="none" stroke="#FFB547" stroke-width="3" />
+<text x="832" y="277" font-size="30" fill="#E4ECE7" font-weight="700" text-anchor="start">CAS</text>
+<text x="832" y="313" font-size="20" fill="#E4ECE7" font-weight="400" text-anchor="start">Content digests</text>
+<text x="832" y="343" font-size="20" fill="#E4ECE7" font-weight="400" text-anchor="start">Deduplication</text>
+<text x="832" y="373" font-size="20" fill="#E4ECE7" font-weight="400" text-anchor="start">Verified reads</text>
+<rect x="1110" y="217" width="290" height="210" rx="12" fill="#16222A" stroke="#4A3F2C" stroke-width="1.5"/>
+<path d="M1132 239 H1166" fill="none" stroke="#FFB547" stroke-width="3" />
+<text x="1132" y="277" font-size="30" fill="#E4ECE7" font-weight="700" text-anchor="start">Storage</text>
+<text x="1132" y="313" font-size="20" fill="#E4ECE7" font-weight="400" text-anchor="start">Immutable keyed blobs</text>
+<text x="1132" y="343" font-size="20" fill="#E4ECE7" font-weight="400" text-anchor="start">Streaming I/O</text>
+<text x="1132" y="373" font-size="20" fill="#E4ECE7" font-weight="400" text-anchor="start">Atomic publication</text>
+<path d="M395 239 H427 V322 H480" fill="none" stroke="#FFB547" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M395 402 H427 V322" fill="none" stroke="#FFB547" stroke-width="2" />
+<circle cx="427" cy="322" r="4" fill="#FFB547"/>
+<text x="437" y="204" font-size="17" fill="#FFB547" font-weight="400" text-anchor="middle">uses</text>
+<path d="M730 322 H810" fill="none" stroke="#FFB547" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="770" y="302" font-size="17" fill="#FFB547" font-weight="400" text-anchor="middle">opens</text>
+<path d="M1030 322 H1110" fill="none" stroke="#FFB547" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="1070" y="302" font-size="17" fill="#FFB547" font-weight="400" text-anchor="middle">stores</text>
+<path d="M217 473 V510" fill="none" stroke="#B9852F" stroke-width="1.5" stroke-dasharray="4 6"/>
+<path d="M605 427 V510" fill="none" stroke="#B9852F" stroke-width="1.5" stroke-dasharray="4 6"/>
+<path d="M920 427 V510" fill="none" stroke="#B9852F" stroke-width="1.5" stroke-dasharray="4 6"/>
+<path d="M1255 427 V510" fill="none" stroke="#B9852F" stroke-width="1.5" stroke-dasharray="4 6"/>
+<rect x="40" y="510" width="1360" height="84" rx="12" fill="#2A2F2C" stroke="#7A5C30"/>
+<text x="62" y="545" font-size="22" fill="#FFB547" font-weight="700" text-anchor="start">SHARED CONTEXT / OBSERVABILITY</text>
+<text x="62" y="576" font-size="18" fill="#E4ECE7" font-weight="400" text-anchor="start">Every layer</text>
+<text x="530" y="545" font-size="22" fill="#E4ECE7" font-weight="400" text-anchor="start">Cancellation / scopes / progress</text>
+<text x="530" y="576" font-size="20" fill="#E4ECE7" font-weight="400" text-anchor="start">Semantic counters / internal-work filtering</text>
+<text x="40" y="623" font-size="16" fill="#E4ECE7" font-weight="400" text-anchor="start">Solid arrows: core dependencies</text>
+<text x="1400" y="623" font-size="16" fill="#E4ECE7" font-weight="400" text-anchor="end">Shared context spans both peers and every downstream layer</text>
+</g></svg>

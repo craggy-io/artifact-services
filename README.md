@@ -10,9 +10,33 @@ and provenance. Small interfaces keep physical storage separate from content
 identity, typed meaning, and revision histories. Context carries cancellation and
 shared observation across operations.
 
-Storage and observability are implemented; CAS, artifacts, Objects, and lineage
-are proposed API designs, not available packages. Objects and lineage are peers
-over artifacts; artifacts builds on CAS, which builds on storage.
+All six layers have initial Go implementations with explicit resource and backend
+limits. Objects and lineage are peers over artifacts; artifacts builds on CAS,
+which builds on storage. See the layer guides for supported subsets and
+[verification evidence](docs/verification.md) for qualification limits.
+
+## Features
+
+- **Immutable content:** [stream blobs atomically](docs/storage.md) and [deduplicate by SHA-256](docs/cas.md), with streamed read integrity established at EOF.
+- **Discoverable snapshots:** [publish files and collections](docs/artifacts.md), filter catalog metadata, and page through fixed query snapshots with explicit limits.
+- **Typed data and bounded queries:** [define table/JSON schemas](docs/objects.md), pin immutable schema versions, and query with a supported SQL subset or JSON Pointer; capabilities and provenance coverage are explicit.
+- **Independent histories:** [record generic provenance and revisions](docs/lineage.md), including explicit row/column mappings and bounded traversal across derivations.
+- **Shared observation:** [carry context across layers](docs/observability.md), report semantic progress and counters, and keep internal work out of default reporting while retaining diagnostic access.
+
+## Layer architecture
+
+<p align="center">
+  <a href="docs/assets/artifact-services-architecture.svg">
+    <img src="docs/assets/artifact-services-architecture.svg" alt="Artifact Services architecture: Objects and Lineage are peers over Artifacts, followed by CAS and Storage; shared context and observability span every layer." width="100%">
+  </a>
+</p>
+
+Solid arrows point to domain dependencies; the shared context band spans all
+layers. Higher-level coordination composes
+Objects publication and lineage recording, without making either peer depend on
+the other for storage. Objects owns schema and selector semantics; lineage carries
+generic references and mapping evidence. Catalog discovery finds snapshots;
+Objects adapters query their content.
 
 | Layer | Responsibilities | Guide |
 | --- | --- | --- |
@@ -25,7 +49,9 @@ over artifacts; artifacts builds on CAS, which builds on storage.
 
 Start with the [documentation index](docs/README.md), the
 [runnable storage/observation example](docs/observability.md#examples), or the
-[illustrative end-to-end walkthrough](docs/walkthrough.md).
+[runnable end-to-end walkthrough](docs/walkthrough.md).
+
+For coding-agent integration and repository development guidance, see [AGENTS.md](AGENTS.md).
 
 ## Development
 

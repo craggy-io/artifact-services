@@ -2,10 +2,10 @@
 
 [Project](../README.md) · [Documentation index](README.md) · [Walkthrough](walkthrough.md)
 
-These are API/query design decisions, not new implemented behavior or a persistence
-schema. The type descriptions below specify filter meanings and response bounds;
-concrete Go record layouts, database tables, and backend constructors are outside
-this pass. All query operations accept context first and are scoped to the logical
+These are implemented bounded artifact and lineage query contracts. Their public
+Go types and constructors are documented in the [artifact](artifacts.md) and
+[lineage](lineage.md) guides. The backend is local, exclusively owned filesystem
+journals with synchronous in-process projections, not a distributed database. All query operations accept context first and are scoped to the logical
 store instance; cursors cannot cross stores or query kinds.
 
 ## Digest access and artifact discovery
@@ -22,7 +22,7 @@ to the artifact catalog owned by the artifacts layer.
   bytes. The cursor binds the snapshot ID and prefix. Get still returns a bounded
   complete manifest; ListFiles avoids requiring callers to materialize that list.
 - `CatalogQuery` supports an optional exact artifact ID, exact accepted schema
-  revision ID for typed publications, inclusive minimum/maximum
+  artifact ID for typed publications, inclusive minimum/maximum
   file count and total logical file bytes, and a bounded list of metadata equality
   filters. Predicates are ANDed; no free-form expression language is accepted.
   Logical bytes sum entry sizes, not unique CAS bytes or disk allocation.
@@ -39,9 +39,11 @@ to the artifact catalog owned by the artifacts layer.
   needed; search does not eagerly load manifests, payloads, or lineage graphs.
 
 Indexed-key configuration is explicit store policy, fixed for an index generation.
-Changing it requires validating existing publications and building a replacement
-index. Invalid existing values block that change; queries must not silently omit
-records. This policy does not introduce metadata-schema APIs.
+The key policy is persisted and immutable for a catalog root. To change it, open
+a new catalog root and republish the same immutable manifests under the new policy;
+validation can reject incompatible values. Existing IDs remain content identities,
+but catalogs/cursors stay scoped to their original roots. No in-place policy-change
+or metadata-schema API is exposed.
 
 ## Direct lineage queries and traversal
 
@@ -93,10 +95,10 @@ an all-inputs-to-all-outputs causal graph from activities.
 
 Lineage List/Traverse accept the same Objects-qualified row/column selectors as
 other Refs, with typed dependency-role filters for value derivation versus predicate/
-control dependencies. An exact schema revision selector is also an explicit typed
-catalog filter for accepted typed publications, not a search over arbitrary claimed
-metadata. Until the validated-claim enforcement boundary exists, this is proposed
-behavior and cannot be inferred from an untrusted type label.
+control dependencies. An exact schema artifact selector is also an explicit typed catalog filter for
+accepted typed publications. Accepted claims come from the module-private typed
+publication capability and durable registration, not arbitrary metadata in CAS.
+See [Objects](objects.md) for validation and supported query semantics.
 
 Traversals expand explicitly persisted mapping evidence through registered selector/
 mapping handlers, alongside existing relationship/revision edges; they never infer
@@ -119,16 +121,17 @@ complete; visibility filters cannot turn missing evidence into a completeness cl
 
 ## Default discovery classification
 
-The following catalog/lineage policy is proposed, not implemented browsing code.
+Catalog and lineage discovery apply the following implemented policy.
 Record classification is explicit User or Internal, assigned by the owning
 publication/record orchestration and retained authoritatively for index rebuilds.
 It is not inferred from filenames, hashes, or arbitrary caller metadata. Ordinary
 artifacts/activities default to User; supporting manifests, indexes, and validation
 records use Internal. A manifest is the representation of its artifact, not a
 second user-facing artifact. User-defined schema artifacts can remain User and
-appear in a dedicated Types view; schema-related content is not automatically hidden.
+appear in a dedicated Types view; schema-related content is not automatically hidden. A dedicated Types UI is not
+part of this library; callers can discover schema artifacts through catalog metadata.
 
-CatalogQuery, lineage Query, and TraversalQuery gain an IncludeInternal boolean,
+CatalogQuery, lineage Query, and TraversalQuery have an IncludeInternal boolean,
 false by default. Filtering happens before visible result counts and pagination;
 diagnostic queries explicitly opt into both categories. Internal indexes retain
 complete facts for lookup, validation, reference resolution, and provenance. Known-ID
@@ -148,33 +151,35 @@ IncludeInternal is part of the cursor's bound query and cannot change on resume.
 Classification changes cannot silently rewrite a cursor snapshot. The initial
 proposal has no reclassification API: publication/record retries retain their
 original classification and conflicting classification reuse errors. Derived index
-rebuilds must preserve classification. Exact persistence fields remain backend
-schema work, not additions to implemented artifact/lineage code.
+rebuilds must preserve classification. Classification is persisted with each authoritative membership/record; it is
+restored on reopen and projection rebuild.
 
 ## Pagination and concurrent updates
 
-Proposed collection defaults: Limit 100, maximum 1,000; invalid/negative bounds
+Collection defaults: Limit 100, maximum 1,000; invalid/negative bounds
 are errors and zero selects the default. File/catalog/record lists and traversals
 all return opaque cursors. Cursors bind store, query kind, normalized filters,
-ordering, index generation, and a fixed snapshot watermark. Changing filters or
+ordering, index generation, and a fixed captured result snapshot. Each cache instance also isolates cursors
+from other stores and query kinds. Changing filters or
 bounds while resuming is an error. Increasing page size is also treated as a new
 query, keeping resumed work unambiguous.
 
-Choose **snapshot pagination**, not a moving best-effort feed. A fresh catalog or
-lineage query captures the authoritative store's committed watermark at admission
-and waits until its index can serve that watermark. Later commits do not enter
+**Snapshot pagination** uses the committed in-process projection captured under
+the same mutex used for registration/record projection. Commits and projection
+updates are synchronous, so no asynchronous index wait is required. Later commits do not enter
 subsequent pages. Ordering and membership remain fixed, so concurrent appends
 cannot create duplicates or skipped members within a cursor session. File-list
 snapshots are the immutable manifest ID and need no live-index watermark.
 
 Cursor sessions expire 15 minutes after the first page (not sliding on access).
-Expired, invalid, or unavailable-generation cursors return explicit errors; callers
-restart rather than silently switching snapshots. Index replacement retains active
-generations for this interval or explicitly invalidates sessions on failure.
-Traversal may retain a bounded server-side frontier/visited set, addressed by the
-opaque cursor; this is not a promise of stateless tokens. Page results are replayable
-for the same cursor while its snapshot is retained. Session allocation is bounded;
-resource exhaustion is an explicit error, not an unbounded graph load.
+Expired, invalid, mismatched, or previous-service-instance cursors return errors;
+callers restart rather than silently switching views. Snapshots are copied into a
+bounded cache and remain replayable across artifact Rebuild within the same live
+service. Reopening a service invalidates its old cursors. Each cache allows 128
+sessions, 16 MiB per snapshot, and 64 MiB total; exhaustion is an explicit error.
+Traversal computes bounded adjacency/results before paging; it does not expose an
+unbounded graph or promise stateless cursors. Limits on decoded evidence and
+adjacency are separate from result/page limits; see [lineage limits](lineage.md).
 
 ## Authoritative facts, indexes, and visibility
 
@@ -185,38 +190,48 @@ and commits the manifest, then idempotently registers its ID in that ledger.
 An identical snapshot has one catalog membership regardless of repeated Publish.
 Successful Publish requires both steps; payload availability alone is insufficient.
 
-The lineage layer owns durable, append-only record persistence with atomic unique-ID
-validation and ordered commit watermarks; conflicting caller-ID reuse fails while
-identical retries return the existing record. Its indexes are rebuildable views,
-not the sole authoritative copy. The artifact layer owns its catalog and membership
-ledger; lineage owns record/reference/adjacency indexes. Neither responsibility
-belongs in blob storage. The specific database/log engine and on-disk encoding
-remain genuinely unsettled, but must satisfy these contracts.
+The lineage layer owns append-only record persistence with atomic unique-ID
+validation and ordered commit sequence numbers. Identical retries reuse a record;
+conflicting reuse fails. Artifact membership and lineage records each use their own
+journal root. Files contain versioned canonical JSON envelopes, published by syncing
+a temporary file and creating an immutable hard link at the sequence filename.
+The shared internal journal is an implementation utility, not a new public layer.
+Canonical JSON bounds both input and expanded output to 8 MiB; duplicate members,
+excessive nesting/numeric expansion, and malformed persisted envelopes are rejected.
 
-The proposed update path is a durable commit followed by ordered index projection;
-index lag is allowed internally, not as silently stale fresh-query results. A new
-query admitted after a successful Publish/Record must include that commit if it
-matches. It waits for its captured watermark, respecting context deadlines; an
-unavailable index produces an error. There is no implicit eventual-consistency
-mode. Known-ID artifact/record reads use authoritative data and do not require a
-healthy search index. An old cursor intentionally does not see later publications.
+Each journal has an exclusive `.lease` file: only one live service owns a root.
+Call Close to release it. A crashed owner's stale lease requires manual removal
+only after confirming that no owner remains; automatic crash recovery is not
+implemented. Journal roots are trusted directories, like blob roots. The defaults
+are 100,000 records, 128 MiB encoded ledger data, and 8 MiB per record; these bound
+replay and projection memory. Duplicate IDs, broken sequences, malformed records,
+and incompatible stored policy are errors on reopen. Directory-entry durability,
+power-loss recovery, and disk-full/sync fault behavior are not qualified.
 
-If content or records commit but a later registration/cleanup step fails, return
-the stable ID and an error distinguishing what committed; never imply rollback.
-The caller retries the same content/record identity to complete registration.
-A manifest committed before failed membership registration can be read by known
-ID but is not catalog-visible until registration succeeds. Projection failures
-after authoritative commit retain durable pending work and retry; publication need
-not wait for projection, but fresh queries cannot pass the visibility barrier until
-projection catches up. A failed durable commit must not advance the watermark.
+Commit and projection update are synchronous under the owning layer's lock.
+Successful Publish/Record is visible to subsequent fresh matching queries; an old
+cursor deliberately excludes later commits. Query cancellation returns errors and
+never labels an incomplete page complete. Known-ID artifact reads can resolve a
+manifest directly from CAS even if registration failed; authoritative Category and
+validated-claim lookup require accepted registration. Lineage reference validation
+requires registered artifacts and existing exact revisions. Public Get does not
+turn arbitrary reserved metadata into accepted validation evidence.
 
-Each owning layer replays its authoritative ledger into a new index generation,
-checks it at a captured watermark, catches up concurrent commits, then atomically
-switches the active generation. Rebuild failure keeps the previous generation;
-unavailability is reported if no valid generation remains. Index rebuild never
-creates new activities, artifact identities, or revisions. Operational scheduling,
-engine-specific transactions, cursor storage, and rebuild tooling are backend
-choices to settle before implementation, not extra public schema APIs here.
+If immutable data commits and a subsequent registration/cleanup step fails, the
+stable ID and typed stage/outcome error indicate what committed; nothing pretends
+to roll back. Retry the same identity to finish registration. Artifact PublishError
+distinguishes ManifestCommitted from Registered; lineage RecordError reports its
+Committed state. Classified retries must preserve the original category.
+
+Artifact Rebuild validates registrations against their immutable manifests and
+atomically replaces its catalog projection after catching up concurrent commits.
+Failure leaves the previous projection intact. Lineage replays its authoritative
+records when opening and constructs bounded query adjacency from those records
+and immutable evidence. Rebuilding projections never creates new logical identities
+or activities. There is no async queue to lose: this backend deliberately chooses
+synchronous projection and explicit errors over an eventually consistent search
+mode. Distributed indexing, automatic compaction, online policy migration, and
+crash lease recovery are not supplied.
 
 ## Cross-layer composition and observation
 

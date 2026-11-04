@@ -2,144 +2,199 @@
 
 [Project](../README.md) · [Documentation index](README.md) · [Walkthrough](walkthrough.md)
 
-Proposed API design only; this package is not implemented. Examples are illustrative, not runnable APIs.
+Available Go API. Lineage records generic assertions and explicit evidence; it does
+not execute activities or establish causal truth from matching content hashes.
 
 ## Purpose
 
-Persist generic provenance and independent revision histories, including required row/column evidence.
+Persist immutable provenance and independent revision histories, including bounded
+row/column evidence and exact history-qualified references.
+
+## Features
+
+- Record generic activities, relationships, and independent revision histories with immutable caller-supplied IDs and idempotent retries.
+- Link derived outputs to exact source revisions without merging their histories or inferring ancestry from equal content.
+- Validate registered artifact references and stream explicit row/column/cell mapping evidence, including value and predicate/control dependencies; detailed selectors require a validator.
+- Filter records by kind and reference role, and page over fixed snapshots with expiring cursors.
+- Traverse explicit relationships, revision parents, and detailed mappings with depth, node, result, and work bounds; report truncation separately from evidence coverage.
+- Persist records in an exclusive local journal, retain caller/adapter coverage assertions, and hide Internal support records from ordinary discovery.
 
 ## Mental model
 
-Activities describe assertions about what happened; revisions describe history; derivation crosses histories without merging them.
+Activities describe assertions about what happened. Revisions describe a history.
+Derivation links can cross histories without merging them. A report derived from an
+APK is not automatically the next APK revision. Identical artifacts may participate
+in multiple unrelated histories because record IDs are supplied by callers, not
+derived from output hashes.
 
 ## Responsibilities and boundaries
 
-The lineage methods belong to a proposed store interface; `Record` is also
-the package's proposed record type. It contains a caller-supplied stable `ID` and
-exactly one payload: `Activity`, `Relationship`, or `Revision`. This tagged record
-model gives all record kinds the same persistence, lookup, retry, and query rules
-without requiring a separate CRUD API for each. Referenced proposed types are:
+`Record` has a stable caller-supplied `ID` and exactly one payload:
 
-- `Activity`: caller-defined `Kind`, optional `Inputs`/`Outputs` as lists of Ref,
-  optional actor/external-source references, and caller metadata. Ref identifies
-  an `artifacts.ID`, a lineage revision ID, or a version-qualified Objects
-  sub-object selector as described in [detailed provenance](lineage.md#semantics-errors-and-limits). Import may have no inputs;
-  annotation may have no outputs. Tool, version, and parameters are optional
-  metadata, never mandatory core fields. An activity records provenance; recording
-  it neither starts execution nor asserts that a tool ran successfully.
-- `Relationship`: caller-defined `Kind`, `From` and `To` Ref, optional establishing
-  activity ID, and metadata. For `derived-from`, From is the derived artifact or
-  revision and To is its source. A relationship can be recorded without producing
-  new bytes or even recording a new activity.
-- `Revision`: an `artifacts.ID` snapshot, zero or more parent revision IDs, an
-  optional establishing activity ID, and metadata. Parent links represent
-  **revision-of**; that reserved relationship is expressed only here, not duplicated
-  as a generic Relationship. Activity/relationship records may reference bounded
-  mapping evidence and coverage rather than embedding enormous edge lists.
-  Distinct revision IDs can point at the same snapshot
-  while recording different histories. A report derived from an APK is a derivation,
-  not automatically an APK revision. Parent links are explicit assertions by the
-  caller, not inferred from digest equality.
-- `Query`: optional record-kind, activity-kind, relationship-kind, and referenced
-  Ref filters, plus bounded `Limit` and opaque `Cursor`. Reference matching includes
-  activity inputs/outputs, relationship endpoints, and revision snapshot/parents;
-  results retain these roles so callers can distinguish provenance from downstream
-  uses. `Page` contains `Records []Record` and `NextCursor`. Pagination requires a
-  stable snapshot as defined by the [query contract](queries.md). Reference-role filters
-  distinguish producers, consumers, endpoints, and revision parents without
-  introducing separate specialized lookup methods.
+- `Activity`: caller-defined Kind, optional Inputs/Outputs (`provenance.Ref`),
+  Actor, ExternalSource, Metadata, and Evidence. Imports may have no inputs;
+  annotations may have no outputs. Tool/version/parameters are ordinary optional
+  metadata, never mandatory core fields.
+- `Relationship`: caller-defined Kind, From/To references, optional establishing
+  Activity ID, Metadata, and Evidence. For derived-from, From is the derived
+  output and To its source. No content need be created to record a relationship.
+- `Revision`: Artifact ID, existing parent revision IDs, optional establishing
+  Activity ID, and Metadata. Parent links represent revision-of; that kind is
+  reserved and cannot also be inserted as a Relationship. Existing-only parents
+  prevent cycles on append. Multiple revisions may point at identical snapshots.
 
-Record validates and persists immutable records, returns their ID, and requires
-referenced local artifacts/revisions/activities to exist. Parent references must
-be existing revisions, preventing cycles on append; external/actor references are
-opaque metadata links, not required local records. Querying by a source finds
-consuming activities, derivation edges, and child revisions; Get follows their
-explicit references to retrieve the corresponding output/provenance records.
-To establish a revision with an activity, first record the activity with its
-already-published output artifact reference, then the revision referencing that
-activity. This avoids requiring mutually forward-referencing records.
+The store validates local artifact registration, revision/artifact binding, and
+establishing activity references. Merely placing a manifest in CAS does not make
+it a valid lineage artifact reference: authoritative catalog membership is required.
+Actor/external links remain opaque external identifiers. Metadata is canonical JSON.
+An identical canonical record/category retry returns the same ID; conflicting reuse
+returns ErrConflict. Arrays retain their order as part of record identity.
 
-IDs are scoped to the lineage store and supplied independently of output hashes.
-An identical normalized retry under the same ID returns that record; conflicting
-reuse errors. Independent activities with identical outputs retain distinct IDs.
-Changing provenance creates another immutable record rather than overwriting one.
-The layer validates structure/references and stores caller assertions; it cannot
-prove causal truth from matching hashes. Mutable labels, branch heads, and other
-movable references are separate from immutable records, with their API deferred.
-No execution engine or automatic branch/merge policy is implied.
+Authoritative records are immutable JSON journal entries under an exclusive root
+lease. Append publication and the in-memory record projection update synchronously;
+a fresh query sees successful prior records. Opening the store replays the journal
+to rebuild that projection. No background lag or eventual-consistency mode exists.
+The current backend permits one live Service per root; close it before reopening.
+A crashed owner's `.lease` requires explicit operator recovery after confirming no
+owner remains. Directory entries are not synced; power-loss durability is unqualified.
 
 ## Public interfaces
 
+- `New(artifactStore artifacts.Store, options Options) (*Service, error)`
+- `(*Service).Close() error`
 - `Record(ctx context.Context, record Record) (ID, error)`
 - `Get(ctx context.Context, id ID) (Record, error)`
 - `List(ctx context.Context, query Query) (Page, error)`
 - `Traverse(ctx context.Context, query TraversalQuery) (TraversalPage, error)`
 
+`Options` contains Root and `ValidateSelector func(context.Context, provenance.Ref)
+error`. Supply Objects' ValidateRef for actual row/column membership validation.
+Without it, detailed references fail with ErrUnsupportedSelector; lineage never
+silently claims that a structurally plausible row exists.
+
 ## Working with other layers
 
-References [artifacts](artifacts.md) and selector contracts owned by [Objects](objects.md). It does not execute activities or interpret SQL inside CAS/storage.
+Lineage and [Objects](objects.md) are peers above [artifacts](artifacts.md).
+The shared `provenance` package contains neutral Ref, Dependency, Mapping, and
+Coverage types, preventing circular Objects/lineage imports. CAS and storage know
+nothing about SQL columns or revision histories. All APIs propagate context and
+open lineage spans; supporting artifact/evidence lookup uses Internal context.
+
+A Ref may name a whole artifact, a whole revision, a row, a column, or a cell.
+Detailed refs require Artifact and Revision; columns/cells also require exact Schema.
+Row-only graph identity ignores an optional Schema qualifier because its artifact
+already pins the schema. Column/cell identity retains it. Display names, offsets,
+and equal content alone do not identify version-scoped rows or schema columns.
+
+For ordinary provenance, an activity with output artifact references may precede
+its revision. For detailed output evidence, publish the output and record its
+revision first, then record the activity/evidence and any establishing relationship.
+That order avoids mutually forward-referencing activity/revision records. The
+Revision.Activity field is optional; no later mutation is required.
 
 ## Examples
 
-See the [walkthrough](walkthrough.md) for A/B/C independent histories, exact input revisions, and migration relationships.
+Given existing `artifactStore`, `objectService`, and a published `artifactID`:
+
+```go
+history, err := lineage.New(artifactStore, lineage.Options{
+    Root: "./lineage-records",
+    ValidateSelector: objectService.ValidateRef,
+})
+if err != nil { return err }
+defer history.Close()
+_, err = history.Record(ctx, lineage.Record{
+    ID: "table-A/revision-1",
+    Revision: &lineage.Revision{Artifact: artifactID},
+})
+```
+
+A and B can retain independent histories when SQL produces C. Record C's own
+revision, then record exact A/B/C revision references and mapping evidence for that
+execution. A saved view pins its definition/inputs; actual row mappings describe a
+specific execution, not just an unevaluated definition. Floating names must be
+resolved before recording evidence. See the [walkthrough](walkthrough.md).
 
 ## Semantics, errors, and limits
 
-Individual row **and** column lineage is a core Objects/lineage contract, not an
-optional artifact-level approximation. An adapter must provide actual mapping evidence;
-a list of input artifact IDs cannot establish detailed ancestry. Capability reporting
-may explicitly declare unsupported operations, but cannot claim complete row/column
-support by returning only whole-artifact dependencies.
+### Direct queries and snapshots
 
-Sub-object Ref selectors are defined/versioned by Objects and carried by generic
-lineage. A row reference qualifies an immutable object/data artifact and exact
-history revision with a version-scoped stable row identity; a column reference
-qualifies that snapshot/history, pinned schema revision, and stable schema column
-identity. Offsets, current column names, or content hashes alone are insufficient.
-Identifiers must distinguish duplicate-valued rows and repeated uses of identical
-snapshots in different histories. Renames/reorders do not create implicit ancestry;
-identity preservation or replacement across revisions requires explicit mappings.
-Generic lineage validates reference structure/ownership through the selector contract,
-without embedding SQL/table meaning in CAS or artifacts.
+Query supports Kind (`activity`, `relationship`, `revision`), ActivityKind,
+RelationshipKind, Ref, Role, DependencyRole, establishing Activity, IncludeInternal,
+Limit, and Cursor. Roles are `input`, `output`, `from`, `to`, `snapshot`, and `parent`.
+A role requires Ref; incompatible filters are rejected. Empty role matches all
+reference positions. DependencyRole selects `value`, `predicate`, or `control`
+evidence. Producer/consumer lookup uses output/input rather than separate APIs.
+Results are sorted by record ID. Returned records and pages are independent copies.
 
-The evidence model must represent many-to-many row mappings for joins, column
-expression dependencies, aggregate output dependence on contributing groups, and
-filter/predicate/control dependencies separately from value derivation. Selecting
-one input row is not necessarily the same as deriving its values. When row and
-column ancestry intersect, the reference model must permit a row+column cell selector;
-cell-level dependency expansion/completeness rules remain an explicit design decision,
-not an implemented promise of arbitrary cell tracing.
+Limit defaults to 100 and caps at 1,000. Opaque cursors bind normalized filters,
+bounds and a fixed immutable result snapshot; later appends do not enter subsequent
+pages. Sessions expire after 15 minutes, are replayable until expiry, and do not
+survive restart. Changing filters/bounds rejects the cursor. Shared pager quotas
+are 128 sessions, 16 MiB per snapshot, and 64 MiB total; exhaustion is explicit.
+Known-ID Get does not depend on a search cursor or derived query cache.
 
-For example, A has its own revision history and B (a table or saved view) has a
-separate history. SQL producing C records exact A/B input revisions and detailed
-mapping evidence. C has its own revision history: derived-from links cross histories,
-while revision-of links connect successive C revisions. The operation must not merge
-A/B histories or treat C as their next revision. Even if content IDs match across
-histories, the selected revision references preserve which inputs were actually used.
-A saved view can describe potential dependencies; actual row mappings belong to a
-specific execution over pinned inputs, not to the unevaluated definition alone.
+### Explicit row/column mappings
 
-Large provenance is persisted in compact immutable mapping artifacts referenced by
-activity/relationship evidence, with derived adjacency indexes for lookup. Do not put
-every edge into RAM or a single unbounded lineage record. Representations can encode
-row ranges, join/group membership and expressions compactly, but compression must not
-invent stronger coverage. Mapping evidence binds exact input/output revisions, selector
-and adapter semantics, dependency roles, and coverage. Persistence/encoding and stable
-row-ID allocation policy remain to be specified, including how transformations assign
-new output identities and how schema evolution maps column identities.
+Individual row **and** column lineage is required. Evidence identifies an immutable
+artifact/path containing NDJSON `provenance.Mapping` values, plus Coverage. Each
+mapping has Output, Inputs (`Dependency{Ref, Role}`), and optional Expression text.
+This supports many-to-many joins, aggregate-group membership, expressions, and
+separate value versus predicate/control dependencies. Expressions are opaque adapter
+explanations, not code interpreted by lineage. Cell references combine row+column.
+No artifact-input list is expanded into invented detailed ancestry.
 
-Every operation/result exposes coverage for rows, columns, dependency roles, and
-relevant operator scopes: complete, incomplete with gaps/reasons, or unsupported.
-Opaque UDFs and unsupported engine operations must either report those limitations
-explicitly or reject a request requiring complete detailed lineage. Completeness
-requirements are checked both before execution against capabilities and at completion
-against actual evidence. Early termination, failed capture, or bounded/truncated
-answers cannot be labeled complete. A snapshot with partial evidence may be saved
-only under an explicit permissive request and must retain its incomplete coverage;
-strict requests cannot publish it as a complete-provenance result.
+Mappings stream from artifacts; they are not embedded as one enormous record.
+Limits per record: 1 MiB canonical record, 64 evidence references, 16 MiB total
+mapping text, 1 MiB per line, 20,000 mapping lines/dependencies, and 10,000 inputs
+per mapping. Expression text caps at 65,536 bytes. Evidence coverage explicitly
+states complete/incomplete/unsupported for rows, columns, values, and predicates,
+with optional bounded reasons. Lineage retains caller/adapter coverage assertions;
+Objects must reject unsupported operators when complete evidence is requested.
 
-Direct filters, traversal direction/bounds, cursor consistency, authoritative persistence and evidence visibility are defined in [query contracts](queries.md).
+Traversals report coverage relevant to visited mapping nodes separately from query
+truncation. Complete evidence does not imply a bounded page is a complete graph.
+Support mapping artifacts remain hidden in ordinary discovery, while explicitly
+requested semantic row/column answers resolve their evidence without requiring
+IncludeInternal merely to access support data.
+
+### Traversal, filtering and failure outcomes
+
+Traverse uses breadth-first search over explicit relationships, revision parents,
+and mapping edges for detailed queries. Kinds defaults to derived-from; revision-of
+is explicit. Direction is outgoing (default), incoming, or both. Outgoing follows
+derived output to source or child revision to parents. Exact qualified references
+are expanded once, and edges are emitted once in deterministic kind/identity order;
+generic relationship cycles therefore terminate without merging histories.
+
+Defaults/hard maxima: depth 4/32, nodes 1,000/10,000, results 2,000/20,000. Root counts
+as a node. Page collections each remain <= Limit. Shared traversal budgets persist
+across pages; truncation identifies depth/nodes/results rather than claiming a full
+graph. Decoding/adjacency work additionally caps at 100,000 selected edges and a
+32 MiB identity/expression estimate; exceeding it returns ErrLimit. The journal caps
+at 128 MiB and 100,000 records. These are explicit bounded local-backend limits,
+not an unbounded graph database promise.
+
+Default List hides Internal records. Traversal also checks authoritative artifact
+category and revision category, so a user relationship cannot expose a hidden bare
+support artifact. Internal nodes may be resolved/expanded, but never collapse into
+fabricated edges between visible nodes. IncludeInternal opts into diagnostics.
+Classification is persisted at Record time and cannot change on retry.
+
+RecordError carries ID, Committed and the underlying cause. A later cleanup error
+can follow authoritative publication; callers must not infer rollback. ErrNotFound,
+ErrInvalid, ErrConflict, ErrUnsupportedSelector and ErrLimit support errors.Is;
+original causes remain wrapped. Cancellation is checked during validation, evidence
+reads and traversal; it cannot interrupt arbitrary blocked I/O. Canceled/failed
+pages are not returned as complete. Parent failures remain observable even when
+supporting work is internal. Closed services reject further operations.
 
 ## Validation and evidence
 
-No runtime qualification exists for this proposed layer. The contracts here are design requirements, not test results. Open implementation/encoding decisions remain explicit in this guide and the [query contracts](queries.md).
+Focused tests exercise the real storage/CAS/artifact stack: independent histories
+sharing content, immutable idempotent records and conflicts, reopen/replay,
+concurrent appends, snapshot paging under new commits, classification conflicts,
+registered-reference enforcement, hidden bare artifacts, row/column join/group and
+predicate evidence, selector mismatch/capability rejection, cycles, bounds,
+cancellation and closed-cursor rejection. `go test -race ./lineage ./provenance`,
+vet and build pass. No crash/power-loss or disk-full guarantees are claimed.

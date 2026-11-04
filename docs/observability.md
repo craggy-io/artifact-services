@@ -8,9 +8,25 @@ Available Go API.
 
 Report explicit work across layers through a shared context.
 
+## Features
+
+- Attach reporting configuration to context and preserve parent/child scope ancestry across nested and concurrent operations.
+- Report scoped progress, bytes, semantic counters, errors, and inclusive duration through callbacks and optional collectors.
+- Classify support work as Internal, inherit that classification, and hide it from default events and statistics while allowing diagnostic opt-in.
+- Retain separate User/Internal collector aggregates; keep each scope's counters independent instead of rolling child bytes into parent totals.
+- Observe reader lifetimes through Close and use a no-op path when observation is disabled; metrics describe observed process work, not persistent inventory.
+
 ## Mental model
 
 A context carries reporting configuration and trace ancestry; each span owns its own counters.
+
+<p align="center">
+  <a href="assets/observability-features.svg">
+    <img src="assets/observability-features.svg" alt="A parent context links User and Internal child scopes; default reporting hides Internal work while diagnostic reporting includes it." width="100%">
+  </a>
+</p>
+
+Each scope owns its counters; filtering Internal work does not remove it from execution or parent duration.
 
 ## Responsibilities and boundaries
 
@@ -28,6 +44,7 @@ transaction. The existing process-local metrics, callback, and reader-lifetime
 
 - `With(ctx context.Context, options Options) context.Context`
 - `WithInternal(ctx context.Context) context.Context`
+- `CategoryFrom(ctx context.Context) Category`
 - `Start(ctx context.Context, scope Scope, key string) (context.Context, *Span)`
 - `(*Span).AddBytes(n int64)`
 - `(*Span).Count(name string, n int64)`
@@ -38,6 +55,13 @@ transaction. The existing process-local metrics, callback, and reader-lifetime
 ## Working with other layers
 
 Independent of storage and all domain packages. Each layer starts scopes and passes the derived context downward. It does not infer domain outcomes from child byte counts.
+
+Persistence owners use `CategoryFrom(ctx)` to obtain the explicit User/Internal
+category for record registration. Capture the operation's category before marking
+its journal, manifest, validation, or index sub-operations Internal: supporting I/O
+does not change the registered object's category. The accessor works even without
+an observer/collector, so persisted classification never depends on telemetry being
+enabled. It does not infer classification from keys, filenames, or content.
 
 ## Examples
 
@@ -107,6 +131,10 @@ Direct storage operations default to `observability.User`. Mark support work wit
 children. Classification is sticky: no API resets an internal descendant to User.
 Start user-facing siblings from the original user context. This deliberate scoping
 rule preserves trace/parent IDs without deriving meaning from storage keys.
+`CategoryFrom(ctx)` returns User for an ordinary context and the inherited Internal
+category after `WithInternal`; subsequent observation reconfiguration, cancellation,
+or disabling observation does not reset that category. It is a read-only accessor,
+not an authorization check or a way to override inherited Internal.
 
 ```go
 // ctx already carries the collector/observer configured above.
@@ -184,3 +212,11 @@ remains a proposal because catalog/lineage implementations do not exist yet.
 ## Validation and evidence
 
 See [verification](verification.md) for executable checks, Windows cases, and the measured 1 GiB baseline. That evidence qualifies current storage/observation behavior only.
+
+Focused `go test -race ./observability`, `go vet ./observability`, and
+`go build ./observability` passed after the registration-facing category accessor
+was added. Tests verify classification before/after configuration, inherited and
+canceled contexts, independent concurrent user/internal consumers, callback event
+map isolation, filtered aggregation, and zero allocations for category lookup plus
+disabled scope creation. These tests do not qualify unrelated domain persistence
+or query implementations.
