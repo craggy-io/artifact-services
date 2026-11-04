@@ -23,7 +23,12 @@ func TestInheritanceAndConcurrentChildren(t *testing.T) {
 	c := new(Collector)
 	var mu sync.Mutex
 	var events []Event
-	ctx := With(context.Background(), Options{Collector: c, Observer: func(e Event) { _ = c.Snapshot(); mu.Lock(); defer mu.Unlock(); events = append(events, e) }})
+	ctx := With(context.Background(), Options{Collector: c, Observer: func(e Event) {
+		_ = c.Snapshot(SnapshotOptions{})
+		mu.Lock()
+		defer mu.Unlock()
+		events = append(events, e)
+	}})
 	ctx, parent := Start(ctx, Scope{"artifacts", "publish"}, "manifest")
 	var wg sync.WaitGroup
 	for range 20 {
@@ -38,7 +43,7 @@ func TestInheritanceAndConcurrentChildren(t *testing.T) {
 	wg.Wait()
 	parent.Count("completed_artifacts", 1)
 	parent.End(nil)
-	snap := c.Snapshot()
+	snap := c.Snapshot(SnapshotOptions{})
 	if snap[Scope{"cas", "put"}].Bytes != 100 || snap[Scope{"artifacts", "publish"}].Bytes != 0 {
 		t.Fatal(snap)
 	}
@@ -61,7 +66,7 @@ func TestInheritanceAndConcurrentChildren(t *testing.T) {
 		}
 	}
 	snap[Scope{"cas", "put"}].Counters["dedup"] = 999
-	if c.Snapshot()[Scope{"cas", "put"}].Counters["dedup"] != 20 {
+	if c.Snapshot(SnapshotOptions{})[Scope{"cas", "put"}].Counters["dedup"] != 20 {
 		t.Fatal("snapshot shares maps")
 	}
 	disabled := With(ctx, Options{})
@@ -93,7 +98,7 @@ func TestThrottleTotalsAndErrors(t *testing.T) {
 	if !last.Final || last.Bytes != 5 || last.Total != 10 || !errors.Is(last.Err, failure) {
 		t.Fatal(last)
 	}
-	if c.Snapshot()[Scope{"test", "work"}].Errors != 1 {
+	if c.Snapshot(SnapshotOptions{})[Scope{"test", "work"}].Errors != 1 {
 		t.Fatal("error count")
 	}
 }

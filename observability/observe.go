@@ -12,12 +12,39 @@ import (
 // Scope separates metrics for each layer and operation. Use bounded labels.
 type Scope struct{ Layer, Operation string }
 
+// Category explicitly classifies work; it is never inferred from keys or names.
+type Category uint8
+
+const (
+	// User is the default for direct operations, including direct storage calls.
+	User Category = iota
+	// Internal identifies supporting work excluded from ordinary reporting.
+	Internal
+)
+
+func selected(category Category, includeInternal bool) bool {
+	return category == User || includeInternal
+}
+
+// WithInternal marks this context subtree as supporting work. Classification is
+// sticky: With and Start preserve it; there is no descendant reset to User.
+// Start user-facing siblings from the original user context instead.
+func WithInternal(ctx context.Context) context.Context {
+	b, _ := ctx.Value(contextKey{}).(binding)
+	if b.category == Internal {
+		return ctx
+	}
+	b.category = Internal
+	return context.WithValue(ctx, contextKey{}, b)
+}
+
 // Event is a cumulative snapshot. Total=-1 means unknown. Counters are named
 // semantic totals reported by the owning layer, not inferred from child spans.
 // Final is emitted once. ParentID links to the scope active in the input context.
 type Event struct {
 	ID, ParentID uint64
 	Scope        Scope
+	Category     Category
 	Key          string
 	Bytes, Total int64
 	Counters     map[string]int64
@@ -31,8 +58,10 @@ type Event struct {
 // or start other spans, but must not reenter the same span/reader. Slow callbacks
 // delay operations. No collector lock is held across callbacks.
 type Options struct {
-	Observer  func(Event)
-	Collector *Collector
+	// IncludeInternal enables future internal events, never replays past events.
+	IncludeInternal bool
+	Observer        func(Event)
+	Collector       *Collector
 	// Nonpositive intervals select 100ms. Start, semantic counts, errors and End
 	// bypass throttling; only intermediate byte updates are throttled.
 	ProgressInterval time.Duration
@@ -42,24 +71,23 @@ type Options struct {
 
 type contextKey struct{}
 type binding struct {
-	options Options
-	parent  uint64
+	options  Options
+	parent   uint64
+	category Category
 }
 
 var nextID atomic.Uint64
 
 // With attaches configuration to this context subtree, retaining its current
-// parent link. Empty Options explicitly disable observation in the subtree.
+// parent link and category. Empty Options explicitly disable observation in the subtree.
 // Contexts must be non-nil, as with standard context APIs.
 func With(ctx context.Context, options Options) context.Context {
-	parent := uint64(0)
-	if previous, ok := ctx.Value(contextKey{}).(binding); ok {
-		parent = previous.parent
-	}
+	b, _ := ctx.Value(contextKey{}).(binding)
 	if options.ProgressInterval <= 0 {
 		options.ProgressInterval = 100 * time.Millisecond
 	}
-	return context.WithValue(ctx, contextKey{}, binding{options: options, parent: parent})
+	b.options = options
+	return context.WithValue(ctx, contextKey{}, b)
 }
 
 // Span is a serially-used scope. Child spans may run concurrently. Methods on a
@@ -79,14 +107,14 @@ func Start(ctx context.Context, scope Scope, key string) (context.Context, *Span
 		return ctx, nil
 	}
 	now := time.Now()
-	s := &Span{options: b.options, start: now, last: now, event: Event{ID: nextID.Add(1), ParentID: b.parent, Scope: scope, Key: key, Total: -1}}
+	s := &Span{options: b.options, start: now, last: now, event: Event{ID: nextID.Add(1), ParentID: b.parent, Scope: scope, Category: b.category, Key: key, Total: -1}}
 	if s.options.Total != nil {
 		if n, known := s.options.Total(scope, key); known && n >= 0 {
 			s.event.Total = n
 		}
 	}
-	s.options.Collector.update(scope, func(m *Metrics) { m.Started++ })
-	child := context.WithValue(ctx, contextKey{}, binding{options: b.options, parent: s.event.ID})
+	s.options.Collector.update(scope, b.category, func(m *Metrics) { m.Started++ })
+	child := context.WithValue(ctx, contextKey{}, binding{options: b.options, parent: s.event.ID, category: b.category})
 	s.emit()
 	return child, s
 }
@@ -103,7 +131,7 @@ func cloneCounters(src map[string]int64) map[string]int64 {
 }
 func (s *Span) emit() {
 	s.event.Elapsed = time.Since(s.start)
-	if s.options.Observer != nil {
+	if s.options.Observer != nil && selected(s.event.Category, s.options.IncludeInternal) {
 		e := s.event
 		e.Counters = cloneCounters(e.Counters)
 		s.options.Observer(e)
@@ -116,7 +144,7 @@ func (s *Span) AddBytes(n int64) {
 		return
 	}
 	s.event.Bytes += n
-	s.options.Collector.update(s.event.Scope, func(m *Metrics) { m.Bytes += n })
+	s.options.Collector.update(s.event.Scope, s.event.Category, func(m *Metrics) { m.Bytes += n })
 	if time.Since(s.last) >= s.options.ProgressInterval {
 		s.last = time.Now()
 		s.emit()
@@ -133,7 +161,7 @@ func (s *Span) Count(name string, n int64) {
 		s.event.Counters = make(map[string]int64)
 	}
 	s.event.Counters[name] += n
-	s.options.Collector.update(s.event.Scope, func(m *Metrics) {
+	s.options.Collector.update(s.event.Scope, s.event.Category, func(m *Metrics) {
 		if m.Counters == nil {
 			m.Counters = make(map[string]int64)
 		}
@@ -161,7 +189,7 @@ func (s *Span) End(err error) {
 	s.event.Final = true
 	s.event.Err = errors.Join(s.event.Err, err)
 	s.event.Elapsed = time.Since(s.start)
-	s.options.Collector.update(s.event.Scope, func(m *Metrics) {
+	s.options.Collector.update(s.event.Scope, s.event.Category, func(m *Metrics) {
 		m.Completed++
 		m.Duration += s.event.Elapsed
 		if s.event.Err != nil {
