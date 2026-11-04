@@ -48,7 +48,7 @@ func TestCancelledOperations(t *testing.T) {
 	if _, err := s.Exists(ctx, "ab"); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
-	for _, m := range c.Snapshot() {
+	for _, m := range c.Snapshot(observability.SnapshotOptions{}) {
 		if m.Completed != 1 || m.Errors != 1 || m.Bytes != 0 {
 			t.Fatal(m)
 		}
@@ -68,7 +68,7 @@ func TestCancellationDuringStream(t *testing.T) {
 	if !errors.Is(err, context.Canceled) || !errors.As(err, &outcome) || outcome.Published {
 		t.Fatal(err)
 	}
-	m := c.Snapshot()[observability.Scope{Layer: "storage", Operation: "put"}]
+	m := c.Snapshot(observability.SnapshotOptions{})[observability.Scope{Layer: "storage", Operation: "put"}]
 	if m.Bytes != 7 || m.Counters["published"] != 0 {
 		t.Fatal(m)
 	}
@@ -105,7 +105,7 @@ func TestReaderLifecycle(t *testing.T) {
 					t.Fatal(n, err)
 				}
 			}
-			if c.Snapshot()[observability.Scope{Layer: "storage", Operation: "open"}].Completed != 0 {
+			if c.Snapshot(observability.SnapshotOptions{})[observability.Scope{Layer: "storage", Operation: "open"}].Completed != 0 {
 				t.Fatal("premature completion")
 			}
 			for range 2 {
@@ -119,7 +119,7 @@ func TestReaderLifecycle(t *testing.T) {
 			if _, err := r.Read(make([]byte, 8)); err != io.ErrClosedPipe {
 				t.Fatal(err)
 			}
-			m := c.Snapshot()[observability.Scope{Layer: "storage", Operation: "open"}]
+			m := c.Snapshot(observability.SnapshotOptions{})[observability.Scope{Layer: "storage", Operation: "open"}]
 			if m.Completed != 1 || (m.Counters["eof"] == 1) != tc.eof || (m.Counters["early_closed"] == 1) == tc.eof {
 				t.Fatal(m)
 			}
@@ -137,7 +137,7 @@ func TestPublicationObservation(t *testing.T) {
 	if !errors.As(err, &outcome) || !outcome.Published {
 		t.Fatal(err)
 	}
-	m := c.Snapshot()[observability.Scope{Layer: "storage", Operation: "put"}]
+	m := c.Snapshot(observability.SnapshotOptions{})[observability.Scope{Layer: "storage", Operation: "put"}]
 	if m.Counters["published"] != 1 || m.Errors != 1 || m.Bytes != 4 {
 		t.Fatal(m)
 	}
@@ -176,7 +176,7 @@ func TestConcurrentStorageChildren(t *testing.T) {
 	var mu sync.Mutex
 	var events []observability.Event
 	ctx := observability.With(context.Background(), observability.Options{Collector: c, Observer: func(e observability.Event) {
-		_ = c.Snapshot()
+		_ = c.Snapshot(observability.SnapshotOptions{})
 		mu.Lock()
 		defer mu.Unlock()
 		events = append(events, e)
@@ -209,7 +209,7 @@ func TestConcurrentStorageChildren(t *testing.T) {
 	wg.Wait()
 	parent.Count("completed_batches", 1)
 	parent.End(nil)
-	snap := c.Snapshot()
+	snap := c.Snapshot(observability.SnapshotOptions{})
 	for _, op := range []string{"put", "open", "exists"} {
 		m := snap[observability.Scope{Layer: "storage", Operation: op}]
 		if m.Completed != 12 || m.Errors != 0 {
@@ -235,5 +235,83 @@ func TestConcurrentStorageChildren(t *testing.T) {
 	}
 	if len(seen) != 36 {
 		t.Fatal(len(seen))
+	}
+}
+
+func TestStorageInternalFiltering(t *testing.T) {
+	s, _ := newTestStore(t)
+	c := new(observability.Collector)
+	var mu sync.Mutex
+	var events []observability.Event
+	ctx := observability.With(context.Background(), observability.Options{Collector: c, Observer: func(e observability.Event) { mu.Lock(); defer mu.Unlock(); events = append(events, e) }})
+	ctx, parent := observability.Start(ctx, observability.Scope{Layer: "app", Operation: "batch"}, "batch")
+	var wg sync.WaitGroup
+	for i := range 8 {
+		wg.Go(func() {
+			callCtx := ctx
+			if i%2 == 0 {
+				callCtx = observability.WithInternal(callCtx)
+			}
+			key := fmt.Sprintf("%04x", i)
+			if err := s.Put(callCtx, key, strings.NewReader("data")); err != nil {
+				t.Error(err)
+				return
+			}
+			r, err := s.Open(callCtx, key)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			if _, err := io.Copy(io.Discard, r); err != nil {
+				t.Error(err)
+			}
+			if err := r.Close(); err != nil {
+				t.Error(err)
+			}
+			if ok, err := s.Exists(callCtx, key); !ok || err != nil {
+				t.Error(ok, err)
+			}
+		})
+	}
+	wg.Wait()
+	parent.End(nil)
+	visible := c.Snapshot(observability.SnapshotOptions{})
+	all := c.Snapshot(observability.SnapshotOptions{IncludeInternal: true})
+	for _, op := range []string{"put", "open", "exists"} {
+		scope := observability.Scope{Layer: "storage", Operation: op}
+		if visible[scope].Completed != 4 || all[scope].Completed != 8 {
+			t.Fatal(visible, all)
+		}
+	}
+	put := observability.Scope{Layer: "storage", Operation: "put"}
+	if visible[put].Bytes != 16 || all[put].Bytes != 32 || visible[put].Counters["published"] != 4 || all[put].Counters["published"] != 8 {
+		t.Fatal(visible, all)
+	}
+	if visible[observability.Scope{Layer: "app", Operation: "batch"}].Bytes != 0 {
+		t.Fatal("rolled up bytes")
+	}
+	finals := 0
+	for _, e := range events {
+		if e.Category != observability.User {
+			t.Fatal("internal event")
+		}
+		if e.Scope.Layer == "storage" {
+			if e.ParentID != events[0].ID {
+				t.Fatal("lost parent")
+			}
+			if e.Final {
+				finals++
+			}
+		}
+	}
+	if finals != 12 {
+		t.Fatal(finals)
+	}
+	// Ordinary unclassified calls remain visible, regardless of key/name.
+	if err := s.Put(ctx, "ffff", strings.NewReader("manifest-looking payload")); err != nil {
+		t.Fatal(err)
+	}
+	if c.Snapshot(observability.SnapshotOptions{})[put].Completed != 5 {
+		t.Fatal("direct storage hidden")
 	}
 }

@@ -111,7 +111,7 @@ func TestLargeBlob1GiB(t *testing.T) {
 		if !e.Final || e.Bytes != size || e.Total != size || e.Err != nil {
 			t.Fatalf("final %s: %+v", op, e)
 		}
-		m := c.Snapshot()[observability.Scope{Layer: "storage", Operation: op}]
+		m := c.Snapshot(observability.SnapshotOptions{})[observability.Scope{Layer: "storage", Operation: op}]
 		if m.Bytes != size || m.Completed != 1 || m.Errors != 0 {
 			t.Fatal(m)
 		}
