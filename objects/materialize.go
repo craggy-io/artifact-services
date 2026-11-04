@@ -155,6 +155,11 @@ func (s *Service) Materialize(ctx context.Context, request MaterializeRequest) (
 		if err = ctx.Err(); err != nil {
 			return out, err
 		}
+		if len(definition.Key) > 0 {
+			if row.ID, err = keyedRowID(definition, row.Values); err != nil {
+				return out, err
+			}
+		}
 		b, err := canon.Marshal(Row{ID: row.ID, Values: row.Values})
 		if err != nil {
 			return out, err

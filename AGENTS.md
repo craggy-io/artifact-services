@@ -16,17 +16,20 @@ Start with the [walkthrough](docs/walkthrough.md) and
 | Immutable file/collection snapshots and metadata discovery | [Artifacts](docs/artifacts.md) |
 | Runtime table/JSON schemas, typed validation and content queries | [Objects](docs/objects.md) |
 | Generic activities, independent revisions and explicit provenance mappings | [Lineage](docs/lineage.md) |
+| Typed statements, current views, keyed uniqueness and writer authority | [Assertions](docs/assertions.md) |
 | Context scopes, progress, semantic counters and visibility | [Observability](docs/observability.md) |
+| Wiring, runs, typed sugar, tree I/O, spooling, GC, test kit, read-only SQL | [Adapters](docs/adapters.md) |
 
-Objects and lineage are peers over artifacts; artifacts uses CAS, which uses
-storage. Shared `provenance` types carry neutral references and evidence. Keep
+Objects, lineage and assertions sit over artifacts; artifacts uses CAS, which uses
+storage. Adapters compose public APIs only and hold no privilege. Shared `provenance` types carry neutral references and evidence. Keep
 schema/query semantics out of storage and CAS. Catalog search finds snapshots;
 Objects queries their content. Lineage records assertions, not execution or proof
 of causal truth.
 
 ## Construct and close services
 
-Construct only the layers the application needs, in dependency order:
+`adapters/stack.Open` does all of this under one root; prefer it unless you need only some
+layers. Otherwise construct what the application needs, in dependency order:
 
 1. `storage.NewFilesystem(blobRoot)`.
 2. `cas.New(blobs, cas.Options{TempDir: stagingDir})`. A supplied staging directory
@@ -37,16 +40,21 @@ Construct only the layers the application needs, in dependency order:
    ValidateSelector: typed.ValidateRef})` for histories with detailed selectors.
    Here `typed` is the Objects service. Without a selector validator, detailed
    row/column references are rejected rather than assumed valid.
+6. `assertions.New(snapshots, assertions.Options{Root: assertionRoot, Authority: authority})`
+   when statements are needed. Keep the `Authority` on a trusted construction path and hand
+   out only the credentials callers need. Wire `ValidateSelector`, `ValidateRevision` and
+   `ValidateActivity` for the reference forms in use.
 
-Handle each constructor error before using the result. Use distinct storage,
-catalog, and lineage roots. Artifact and lineage journals each take an exclusive
-root lease: one live service owns each journal root. Their Close methods release
-those leases; after stopping work and closing streams, close lineage before
-artifacts. Storage, CAS, and Objects have no service Close method. Closing an
-artifact service does not close shared CAS or outstanding file readers.
-Storage's concurrent-writer contract is distinct from journal root exclusivity.
-See the owning guides for lease recovery and filesystem requirements; atomic
-visibility does not promise crash/power-loss durability.
+Handle each constructor error before using the result. Use distinct storage, catalog,
+lineage and assertion roots. Artifact, lineage and assertion journals each take an exclusive
+OS file lock on their root: one live service owns each. A dead owner's lock disappears with
+it, so reopening needs no recovery step; never delete a `.lease` file. Close methods release
+the locks; after stopping work and closing streams, close assertions, then lineage, then
+artifacts. Storage, CAS, and Objects have no service Close method. Closing an artifact
+service does not close shared CAS or outstanding file readers. Storage's concurrent-writer
+contract is distinct from journal root exclusivity. A successful commit has been flushed, so
+it survives process death and, as far as the OS and hardware honour a flush, power loss;
+`Options.Relaxed` gives that up for speed. See [durability](docs/durability.md).
 
 ## Context, streams, and errors
 
@@ -66,8 +74,9 @@ visibility does not promise crash/power-loss durability.
   to stop, and can race publication. Never infer rollback from a canceled context.
 - Use `errors.As` for stage information and `errors.Is` for retained causes:
   `storage.PutError.Published`, `cas.PutError.Committed`,
-  `artifacts.PublishError.ManifestCommitted`/`Registered`, and
-  `lineage.RecordError.Committed`. Objects publication/materialization errors also
+  `artifacts.PublishError.ManifestCommitted`/`Registered`,
+  `artifacts.OccurrenceError.Committed`, `lineage.RecordError.Committed`, and
+  `assertions.RecordError.Committed`. Objects publication/materialization errors also
   retain stage information; inspect their documented outcomes. A returned ID alone
   is not proof of success. Cleanup can fail after commitment; retain stable IDs and
   retry according to the owning layer's idempotency contract.
@@ -89,7 +98,12 @@ intended history and derivation links across histories explicit.
 `SaveView` stores a definition and exact inputs, not computed rows. `Materialize`
 publishes validated table results and mapping evidence; the caller coordinates
 separate lineage records. This is not one cross-layer rollback transaction. Follow
-the [walkthrough](docs/walkthrough.md) for publication and recording order.
+the [composite protocol](docs/durability.md#composite-operations) for publication and
+recording order, with stable IDs at each step, or use [`adapters/runs`](docs/adapters.md#runs).
+
+`artifacts.ID` is content-derived: publishing equal bytes twice gives one ID. To describe two
+publications separately, record two occurrences, and reference `Occurrence` to stay with one,
+`Artifact` for the snapshot, or `Digest` to follow content.
 
 ## Queries and limits
 
@@ -103,17 +117,19 @@ supported emitted-result dependencies, not counterfactual explanations. Check
 terminal completion and coverage, including early-close outcomes.
 
 Validation and query execution have explicit byte, row, result, join, group, and
-dependency bounds; a stream-shaped API does not mean unlimited datasets or lazy
-execution. Lineage separately bounds evidence and traversal work. Distinguish
+dependency bounds. Validation, `Rows` and single-table non-aggregate SQL stream, and those
+queries report evaluation and limit errors from `Next`; joins and aggregates are resident
+within their limits. Lineage separately bounds evidence and traversal work. Distinguish
 evidence coverage from graph truncation. See [Objects](docs/objects.md),
 [lineage](docs/lineage.md), and [query contracts](docs/queries.md).
 
-Catalog and lineage cursors bind filters/bounds to fixed snapshots. Keep the query
+Catalog, lineage and assertion cursors bind filters/bounds to fixed snapshots. Keep the query
 unchanged while resuming; later writes do not enter those pages. Cursors expire and
 do not survive service restart. Handle expiry, invalid cursors, and resource limits
 explicitly. Snapshot consistency is local to each query, not a transaction across
 all layers. Internal discovery is opt-in; known-ID access is not an authorization
-boundary. Journal projections can be rebuilt from authoritative records.
+boundary. Journal projections can be rebuilt from authoritative records. For a lossless feed, keep a
+position and read `Changes`; `OnCommit` is a coalesced wake-up, not a delivery log.
 
 ## Developing and verifying in this repository
 
@@ -138,7 +154,11 @@ go test ./...
 go test -race ./...
 go vet ./...
 go build ./...
+(cd adapters/sqlindex && go test ./...)
 ```
+
+`TestExportedAPIMatchesGolden` fails on any exported-API change. Regenerate `api.golden.txt`
+as described in [stability](docs/stability.md) and review its diff.
 
 Run focused package tests while iterating and relevant broader checks for the
 change. In a consumer repository, run that application's integration tests against

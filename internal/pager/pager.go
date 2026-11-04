@@ -149,3 +149,45 @@ func (c *Cache[T]) mac(s string) []byte {
 	m.Write([]byte(s))
 	return m.Sum(nil)
 }
+
+// Position seals a resume position bound to a query. It suits immutable data,
+// where no snapshot needs caching: the position alone resumes the listing.
+func (c *Cache[T]) Position(query any, position string) (string, error) {
+	hash, err := queryHash(query)
+	if err != nil {
+		return "", err
+	}
+	encoded := hex.EncodeToString([]byte(position))
+	return "p." + encoded + "." + hex.EncodeToString(c.mac(hash+"."+encoded)), nil
+}
+
+// OpenPosition returns the position sealed by Position, or ErrCursor if the
+// cursor is invalid, came from another service, or was made for another query.
+func (c *Cache[T]) OpenPosition(query any, cursor string) (string, error) {
+	hash, err := queryHash(query)
+	if err != nil {
+		return "", err
+	}
+	parts := strings.Split(cursor, ".")
+	if len(parts) != 3 || parts[0] != "p" {
+		return "", ErrCursor
+	}
+	mac, err := hex.DecodeString(parts[2])
+	if err != nil || !hmac.Equal(mac, c.mac(hash+"."+parts[1])) {
+		return "", ErrCursor
+	}
+	position, err := hex.DecodeString(parts[1])
+	if err != nil {
+		return "", ErrCursor
+	}
+	return string(position), nil
+}
+
+func queryHash(query any) (string, error) {
+	encoded, err := canon.Marshal(query)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:]), nil
+}

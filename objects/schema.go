@@ -4,12 +4,15 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/craggy-io/artifact-services/artifacts"
 	"github.com/craggy-io/artifact-services/cas"
 	"github.com/craggy-io/artifact-services/internal/canon"
+	"github.com/craggy-io/artifact-services/internal/extsort"
 	"github.com/craggy-io/artifact-services/internal/typedclaim"
 	"github.com/craggy-io/artifact-services/observability"
 	"github.com/craggy-io/artifact-services/provenance"
@@ -93,8 +96,11 @@ func validateDefinition(d SchemaDefinition) error {
 				return err
 			}
 		}
+		if err := validateKey(d); err != nil {
+			return err
+		}
 	case JSON:
-		if len(d.Columns) != 0 || d.JSON == nil {
+		if len(d.Columns) != 0 || d.JSON == nil || len(d.Key) != 0 {
 			return fmt.Errorf("%w: JSON shape", ErrSchema)
 		}
 		return validateShape(*d.JSON, 0, &count)
@@ -103,6 +109,68 @@ func validateDefinition(d SchemaDefinition) error {
 	}
 	return nil
 }
+func validateKey(d SchemaDefinition) error {
+	if len(d.Key) > 16 {
+		return fmt.Errorf("%w: key column limit", ErrSchema)
+	}
+	seen := map[string]bool{}
+	for _, id := range d.Key {
+		found := false
+		for _, c := range d.Columns {
+			if c.ID != id {
+				continue
+			}
+			found = true
+			if c.Shape.Nullable || c.Shape.Type != "string" && c.Shape.Type != "integer" && c.Shape.Type != "boolean" {
+				return fmt.Errorf("%w: key column %s must be a non-nullable string, integer or boolean", ErrSchema, id)
+			}
+		}
+		if !found || seen[id] {
+			return fmt.Errorf("%w: key column %s", ErrSchema, id)
+		}
+		seen[id] = true
+	}
+	return nil
+}
+
+// KeyRowID derives the row ID of a keyed schema from key values in Schema.Key order,
+// for addressing a row by its natural key in a provenance.Ref.
+func KeyRowID(d SchemaDefinition, key ...any) (string, error) {
+	if len(d.Key) == 0 || len(key) != len(d.Key) {
+		return "", fmt.Errorf("%w: schema key has %d columns, got %d values", ErrValidation, len(d.Key), len(key))
+	}
+	encoded, err := canon.Marshal(key)
+	if err != nil {
+		return "", fmt.Errorf("%w: key values: %v", ErrValidation, err)
+	}
+	sum := sha256.Sum256(encoded)
+	return "k-" + hex.EncodeToString(sum[:]), nil
+}
+
+func keyedRowID(d SchemaDefinition, values map[string]any) (string, error) {
+	key := make([]any, len(d.Key))
+	for i, id := range d.Key {
+		key[i] = values[id]
+	}
+	return KeyRowID(d, key...)
+}
+
+// ValidateShape checks a shape definition on its own, for layers that validate JSON
+// values against shapes without being bound to an artifact.
+func ValidateShape(sh Shape) error {
+	count := 0
+	return validateShape(sh, 0, &count)
+}
+
+// CheckJSON reports whether one canonical JSON value conforms to a shape.
+func CheckJSON(raw []byte, sh Shape) error {
+	var value any
+	if err := strictJSON(raw, &value); err != nil {
+		return fmt.Errorf("%w: %v", ErrValidation, err)
+	}
+	return checkValue(value, sh, "$")
+}
+
 func validateShape(sh Shape, depth int, count *int) error {
 	*count++
 	if depth > 32 || *count > 2048 || len(sh.Properties) > 256 || len(sh.Enum) > 256 || sh.MaxLength < 0 {
@@ -325,7 +393,7 @@ func (s *Service) Validate(ctx context.Context, request ValidationRequest) (repo
 		if request.Encoding != NDJSON {
 			return report, ErrUnsupported
 		}
-		err = s.rows(ctx, request.Data, manifest.Entries[0].Path, definition, func(Row) error { report.Rows++; return nil })
+		err = s.validateTable(ctx, request.Data, manifest.Entries[0].Path, definition, &report.Rows)
 		if report.Rows > 0 {
 			span.Count("rows_validated", report.Rows)
 		}
@@ -439,84 +507,185 @@ func (s *Service) readFile(ctx context.Context, id artifacts.ID, path string, ma
 	}
 	return data, nil
 }
-func (s *Service) rows(ctx context.Context, id artifacts.ID, path string, d SchemaDefinition, visit func(Row) error) (result error) {
-	r, err := s.artifacts.OpenFile(observability.WithInternal(ctx), id, path)
+
+// rowReader pulls rows one at a time with resident memory bounded by one row. It
+// checks each row's shape and identity, but not uniqueness across rows: that is a
+// whole-table property established once, at validation, by validateTable.
+type rowReader struct {
+	ctx        context.Context
+	reader     io.ReadCloser
+	scanner    *bufio.Scanner
+	definition SchemaDefinition
+	limits     Options
+	total      int64
+	count      int
+}
+
+func (s *Service) openRows(ctx context.Context, id artifacts.ID, path string, d SchemaDefinition) (*rowReader, error) {
+	reader, err := s.artifacts.OpenFile(observability.WithInternal(ctx), id, path)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer func() { result = errors.Join(result, r.Close()) }()
-	scanner := bufio.NewScanner(io.LimitReader(r, limitPlusOne(s.limits.MaxBytes)))
+	scanner := bufio.NewScanner(io.LimitReader(reader, limitPlusOne(s.limits.MaxBytes)))
 	// bufio's effective token cap is max(MaxRowBytes, cap(buf)); size the
 	// initial buffer no larger than the row limit and check lengths directly.
 	scanner.Buffer(make([]byte, min(4096, max(1, s.limits.MaxRowBytes))), s.limits.MaxRowBytes)
-	seen := map[string]bool{}
-	unique := map[string]map[string]bool{}
-	for _, c := range d.Columns {
-		if c.Unique {
-			unique[c.ID] = map[string]bool{}
+	return &rowReader{ctx: ctx, reader: reader, scanner: scanner, definition: d, limits: s.limits}, nil
+}
+
+// Next returns io.EOF after the last row, once the content digest has verified.
+func (r *rowReader) Next() (Row, error) {
+	if !r.scanner.Scan() {
+		if err := r.scanner.Err(); err != nil {
+			if errors.Is(err, bufio.ErrTooLong) {
+				return Row{}, fmt.Errorf("%w: row read: %w", ErrLimit, err)
+			}
+			return Row{}, err
+		}
+		if err := r.ctx.Err(); err != nil {
+			return Row{}, err
+		}
+		return Row{}, io.EOF
+	}
+	if err := r.ctx.Err(); err != nil {
+		return Row{}, err
+	}
+	line := r.scanner.Bytes()
+	if len(line) > r.limits.MaxRowBytes {
+		return Row{}, ErrLimit
+	}
+	r.total += int64(len(line)) + 1
+	if r.total > r.limits.MaxBytes {
+		return Row{}, ErrLimit
+	}
+	r.count++
+	if r.count > r.limits.MaxRows {
+		return Row{}, ErrLimit
+	}
+	var row Row
+	if err := strictJSON(line, &row); err != nil {
+		return Row{}, fmt.Errorf("%w: row JSON: %v", ErrValidation, err)
+	}
+	if len(row.Values) != len(r.definition.Columns) {
+		return Row{}, fmt.Errorf("%w: row column count", ErrValidation)
+	}
+	for _, c := range r.definition.Columns {
+		v, ok := row.Values[c.ID]
+		if !ok {
+			return Row{}, fmt.Errorf("%w: missing column %s", ErrValidation, c.ID)
+		}
+		if err := checkValue(v, c.Shape, "row "+row.ID+"."+c.ID); err != nil {
+			return Row{}, err
 		}
 	}
-	total := int64(0)
-	count := 0
-	for scanner.Scan() {
-		if err = ctx.Err(); err != nil {
+	if len(r.definition.Key) > 0 {
+		derived, err := keyedRowID(r.definition, row.Values)
+		if err != nil {
+			return Row{}, err
+		}
+		if row.ID != "" && row.ID != derived {
+			return Row{}, fmt.Errorf("%w: row ID does not match its key", ErrValidation)
+		}
+		row.ID = derived
+	}
+	if row.ID == "" || len(row.ID) > 256 {
+		return Row{}, fmt.Errorf("%w: invalid row ID", ErrValidation)
+	}
+	return row, nil
+}
+
+// Close releases the content reader. Closing before EOF does not verify the digest.
+func (r *rowReader) Close() error { return r.reader.Close() }
+
+func (s *Service) rows(ctx context.Context, id artifacts.ID, path string, d SchemaDefinition, visit func(Row) error) (result error) {
+	reader, err := s.openRows(ctx, id, path, d)
+	if err != nil {
+		return err
+	}
+	defer func() { result = errors.Join(result, reader.Close()) }()
+	for {
+		row, err := reader.Next()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
 			return err
-		}
-		line := scanner.Bytes()
-		if len(line) > s.limits.MaxRowBytes {
-			return ErrLimit
-		}
-		total += int64(len(line)) + 1
-		if total > s.limits.MaxBytes {
-			return ErrLimit
-		}
-		count++
-		if count > s.limits.MaxRows {
-			return ErrLimit
-		}
-		var row Row
-		if err = strictJSON(line, &row); err != nil {
-			return fmt.Errorf("%w: row JSON: %v", ErrValidation, err)
-		}
-		if row.ID == "" || len(row.ID) > 256 || seen[row.ID] {
-			return fmt.Errorf("%w: invalid/duplicate row ID", ErrValidation)
-		}
-		seen[row.ID] = true
-		if len(row.Values) != len(d.Columns) {
-			return fmt.Errorf("%w: row column count", ErrValidation)
-		}
-		for _, c := range d.Columns {
-			v, ok := row.Values[c.ID]
-			if !ok {
-				return fmt.Errorf("%w: missing column %s", ErrValidation, c.ID)
-			}
-			if err = checkValue(v, c.Shape, "row "+row.ID+"."+c.ID); err != nil {
-				return err
-			}
-			if c.Unique {
-				b, e := canon.Marshal(v)
-				if e != nil {
-					return e
-				}
-				key := string(b)
-				if unique[c.ID][key] {
-					return fmt.Errorf("%w: uniqueness %s", ErrValidation, c.ID)
-				}
-				unique[c.ID][key] = true
-			}
 		}
 		if err = visit(row); err != nil {
 			return err
 		}
 	}
-	if err = scanner.Err(); err != nil {
-		if errors.Is(err, bufio.ErrTooLong) {
-			return fmt.Errorf("%w: row read: %w", ErrLimit, err)
+}
+
+// uniqueSeparator ends a column ID in a uniqueness record. Row identity uses a
+// reserved name, which no identifier-shaped column ID can equal.
+const (
+	uniqueSeparator = "\x00"
+	rowIdentity     = "-row-id"
+)
+
+// validateTable streams a whole table and checks uniqueness by external sort, so
+// resident memory does not grow with row count.
+func (s *Service) validateTable(ctx context.Context, id artifacts.ID, path string, d SchemaDefinition, rows *int64) (result error) {
+	sorter := extsort.New(extsort.Options{Compare: bytes.Compare, TempDir: s.limits.TempDir})
+	defer func() { result = errors.Join(result, sorter.Close()) }()
+	err := s.rows(ctx, id, path, d, func(row Row) error {
+		*rows++
+		if err := sorter.Add([]byte(rowIdentity + uniqueSeparator + row.ID)); err != nil {
+			return err
 		}
+		for _, c := range d.Columns {
+			if !c.Unique {
+				continue
+			}
+			value, err := canon.Marshal(row.Values[c.ID])
+			if err != nil {
+				return err
+			}
+			if err = sorter.Add(append([]byte(c.ID+uniqueSeparator), value...)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
 		return err
 	}
-	return ctx.Err()
+	var previous []byte
+	return sorter.Each(func(record []byte) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if previous != nil && bytes.Equal(previous, record) {
+			column, _, _ := bytes.Cut(record, []byte(uniqueSeparator))
+			if string(column) == rowIdentity {
+				return fmt.Errorf("%w: duplicate row ID", ErrValidation)
+			}
+			return fmt.Errorf("%w: uniqueness %s", ErrValidation, column)
+		}
+		previous = append(previous[:0], record...)
+		return nil
+	})
 }
+
+// Rows streams a validated table artifact with memory bounded by one row, subject
+// to the configured MaxRows and MaxBytes. See RowStream for when bytes are verified.
+func (s *Service) Rows(ctx context.Context, id artifacts.ID) (stream RowStream, result error) {
+	ctx, span := begin(ctx, "rows", string(id))
+	defer func() { span.End(result) }()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	d, _, m, encoding, err := s.typed(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if d.Model != Table || encoding != NDJSON {
+		return nil, ErrUnsupported
+	}
+	return s.openRows(ctx, id, m.Entries[0].Path, d)
+}
+
 func (s *Service) typed(ctx context.Context, id artifacts.ID) (SchemaDefinition, artifacts.ID, artifacts.Manifest, string, error) {
 	claim, err := s.artifacts.ValidatedClaim(observability.WithInternal(ctx), id)
 	if err != nil {

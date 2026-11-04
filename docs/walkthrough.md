@@ -122,3 +122,12 @@ No layer should add child stream bytes to parent logical totals as unique payloa
 Cancellation is cooperative; it cannot interrupt arbitrary blocked I/O or undo an
 already committed publication. See [observability](observability.md) and the
 [storage cancellation contract](storage.md#semantics-errors-and-limits).
+
+## 9. Make statements, run work, and survive crashes
+
+Name a publication with an [occurrence](artifacts.md#occurrences) so that identical bytes
+imported twice stay separately describable. Say something about it with
+[assertions](assertions.md), restricted to the writers you choose. Use
+[`adapters/runs`](adapters.md#runs) to run a function with private outputs, pinned reads and
+deterministic reuse. If the process dies anywhere, reopen and run the same thing again; see
+[durability](durability.md#composite-operations).
