@@ -147,6 +147,8 @@ from C’s own revision chain even when their artifacts contain identical bytes.
 - `Validate(ctx context.Context, request ValidationRequest) (ValidationReport, error)`
 - `Publish(ctx context.Context, request PublishRequest) (artifacts.ID, error)`
 - `ValidateRef(ctx context.Context, ref provenance.Ref) error`
+- `Rows(ctx context.Context, id artifacts.ID) (RowStream, error)`
+- `KeyRowID(definition SchemaDefinition, key ...any) (string, error)`, `ValidateShape(Shape) error`, `CheckJSON(raw []byte, shape Shape) error`
 - `Query(ctx context.Context, request QueryRequest) (ResultStream, error)`
 - `Capabilities(ctx context.Context) (Capabilities, error)`
 - `SaveView(ctx context.Context, request QueryRequest) (artifacts.ID, error)`
@@ -212,6 +214,19 @@ Materialization bounds table/evidence bytes by MaxBytes and a single evidence ro
 by the internal 16 MiB read bound. Mapping records also obey provenance's 10,000-input
 bound. Large joins therefore may fail explicitly even when their input files fit.
 
+**Keyed rows.** A table schema may declare `SchemaDefinition.Key`, naming its key columns.
+Rows then omit `id`, and their identity derives from the key values through `KeyRowID`, so a
+reference can address a row by natural key. Rows in a keyed table that supply a differing ID
+are rejected.
+
+**What streams.** Validation and `Rows` read one row at a time and check uniqueness through
+an external sort that spills to `Options.TempDir`, so a 1,000,000-row table needs no more heap
+than a small one. SQL over a single table without aggregation also streams: `Next` evaluates
+rows on demand, and evaluation and `MaxResultRows` errors arrive from `Next` rather than
+`Query`, so read to EOF before trusting a result. Joins and aggregates remain resident within
+their limits and report errors from `Query`. `MaxDependencies` still applies to streaming
+queries, because each returned row's dependencies count toward it.
+
 Context is checked between reads, joins, groups and outputs; blocking underlying
 I/O is not forcibly interrupted. ResultStream is serial-use, Close is idempotent,
 and reads after Close fail. Coverage is incomplete before EOF, after an error, or
@@ -236,6 +251,6 @@ many-to-many joins/groups and exact input histories, predicate/control evidence,
 unsupported SQL/UDFs, resource limits/cancellation/early close, JSON Pointer coverage,
 view pins, row/cell/column mapping publication, selector validation, reserved-claim
 rejection, temporary cleanup and committed output followed by evidence failure.
-The root integration suite exercises all actual layers together. No out-of-core SQL,
-why-not provenance, arbitrary UDF coverage, crash recovery, disk-full qualification,
-or large Objects-query benchmark is claimed. See [verification](verification.md).
+`TestMillionRowTrial` is the opt-in million-row measurement. The root integration suite
+exercises all actual layers together. No out-of-core joins or aggregates, why-not provenance,
+arbitrary UDF coverage or disk-full qualification is claimed. See [verification](verification.md).

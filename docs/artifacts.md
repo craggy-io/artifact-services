@@ -35,25 +35,35 @@ A readable manifest and accepted catalog membership are separate commit outcomes
 
 ## Responsibilities and boundaries
 
-`Manifest` has Version, Entries and Metadata. Each Entry has Path, Content (`cas.ID`)
-and Size. Publish verifies each referenced CAS stream through EOF, checks its size,
+`Manifest` has Version, Entries and Metadata. Each Entry has Path, Kind, Mode, and the
+fields of its kind: Content and Size for a file, nothing for an explicit directory,
+Target and an optional TargetPath for a link embedding another snapshot. Publish verifies each referenced CAS stream through EOF, checks its size,
 canonicalizes the manifest and publishes it through CAS, then registers membership.
 The complete collection is accepted only after both manifest and registration commit.
-Payloads are not held in RAM; manifests and metadata are deliberately bounded.
+Payloads are not held in RAM. A manifest is stored as a root object over sorted blocks of
+entries, so opening one file reads one block and listing pages through blocks.
 
-Version 0 on publication selects version 1. Encoded manifests always contain version
-1, sorted unique path entries, and canonical JSON metadata: sorted object keys,
-exact normalized decimal numbers and deterministic JSON string escaping. Duplicate
+Version 0 on publication selects version 1. Stored manifests carry
+`ManifestVersion`, sorted unique path entries, and canonical JSON metadata: sorted object
+keys, exact normalized decimal numbers and deterministic JSON string escaping. Duplicate
 metadata object members, unsupported versions and noncanonical manifests encountered
-by Get are rejected. IDs use the canonical manifest's `sha256:<hex>` CAS identity.
-Metadata changes affect snapshot identity; input entry order and equivalent numeric
-JSON spellings do not. Get returns an independent manifest value.
+by Get are rejected. IDs use the canonical root's `sha256:<hex>` CAS identity. Metadata,
+modes and kinds affect snapshot identity; input entry order and equivalent numeric JSON
+spellings do not. Get returns an independent manifest value.
 
 Paths are case-sensitive logical names, not filesystem extraction instructions.
 Absolute paths, empty/dot/traversal segments, backslashes, colons, NUL, invalid UTF-8,
-and names over 4096 bytes are rejected. Limits are 10,000 entries, 8 MiB canonical
-manifest bytes, 256 metadata keys (each at most 256 bytes), and 1 MiB metadata input
-and canonical metadata. Sizes are nonnegative; summed logical size must fit int64.
+and names over 4096 bytes are rejected. Metadata is limited to 256 keys (each at most
+256 bytes) and 1 MiB. Sizes are nonnegative; summed logical size must fit int64.
+
+`Options` sets the other limits: `MaxEntries` per manifest (default 100,000,000),
+`MaxMaterializedEntries` for `Get`, the one call that holds a whole entry list (default
+100,000; ListFiles and OpenFile are unaffected), `MaxManifestBytes` for the root object
+(at most 8 MiB), `MaxLinkDepth` (default 16), and `MaxRecords` and `MaxBytes` for the journal.
+
+Build large trees with `NewBuilder`: `Add` entries in any order, then `Publish`. It sorts
+through temporary files, so heap stays flat however many entries there are.
+`BuilderOptions.VerifyContent` checks each entry's size against stored content as it goes.
 
 ## Public interfaces
 
@@ -67,9 +77,15 @@ and canonical metadata. Sizes are nonnegative; summed logical size must fit int6
 - `Category(ctx context.Context, id ID) (observability.Category, error)`
 - `Rebuild(ctx context.Context) error`
 - `Close() error`
+- `NewBuilder(options BuilderOptions) *Builder`
+- `Stat(ctx, id, path) (FileInfo, error)`, `StatContent(ctx, cas.ID) (int64, error)`
+- `OpenSeekable(ctx, id, path) (cas.SeekableFile, error)`
+- `RecordOccurrence(ctx, OccurrenceRequest) (Occurrence, error)`, `GetOccurrence(ctx, OccurrenceID) (Occurrence, error)`, `Occurrences(ctx, OccurrenceQuery) (OccurrencePage, error)`
+- `Sequence(ctx) (uint64, error)`, `OnCommit(func(uint64)) (stop func())`, `Changes(ctx, provenance.ChangeQuery) (provenance.ChangePage, error)`
+- `Fence(ctx, func(context.Context) error) error`, `Reachable(ctx, func(cas.ID) error) error`
 
-`Store` is the replaceable Publish/Get/OpenFile/ListFiles/Search/Category
-interface. Category resolves authoritative registered classification without scanning
+`Store` is the replaceable interface over the read, publish, search, stat and occurrence
+methods. Category resolves authoritative registered classification without scanning
 the catalog; an unregistered manifest returns ErrNotFound even if Get can read it. `Options` chooses Root and IndexedMetadata. Call Close to release the
 exclusive catalog lease; it does not close already-returned readers or the shared CAS.
 
@@ -173,20 +189,40 @@ Returned pages are independent copies. Cursors belong to one live Service and do
 not survive Close/reopen. Rebuild retains existing snapshots while atomically replacing
 its derived catalog; new queries see all committed registrations at capture time.
 
-Journal records are authoritative, bounded to 100,000 records/128 MiB; catalog
-projections are replayed and checked against CAS manifests on New/Rebuild. A failed
-rebuild leaves the previous projection intact. Publication appends its immutable
-record and updates the projection under one service lock, so there is no asynchronous
-index lag or silent stale fresh-query mode. Queries use the projection, not an
-unbounded walk over payloads. Cross-layer transactional snapshots are not promised.
+Journal records are authoritative, bounded by default to 20,000,000 records and 64 GiB.
+The resident state is a key index and offsets, not record values. Catalog projections are
+replayed and checked against CAS manifests on New/Rebuild. A failed rebuild leaves the
+previous projection intact. Publication appends its immutable record and updates the
+projection in one critical section, so there is no asynchronous index lag or silent stale
+fresh-query mode. Queries use the projection, not an unbounded walk over payloads.
+Cross-layer transactional snapshots are not promised.
 
-The filesystem root is exclusively leased to one Service/process. Crashed owners
-can leave a `.lease` requiring deliberate manual recovery after confirming no owner
-is running. Journal file contents are synced before atomic hard-link publication;
-directory durability and crash recovery remain unqualified. Roots must be trusted.
-Cancellation is checked before operations and while verifying payloads; arbitrary
-blocked reads and filesystem commits cannot be forcibly interrupted. No committed
-manifest/registration is rolled back because later cancellation or cleanup failed.
+The filesystem root is exclusively leased to one live Service; a dead owner's lease
+disappears with it. See [durability](durability.md) for the commit points, fsync policy and
+recovery. Roots must be trusted. Cancellation is checked before operations and while
+verifying payloads; arbitrary blocked reads and filesystem commits cannot be forcibly
+interrupted. No committed manifest/registration is rolled back because later cancellation
+or cleanup failed.
+
+## Occurrences
+
+A snapshot's ID comes from its content, so publishing identical bytes twice gives one ID,
+and that keeps retries idempotent. An `Occurrence` is the separate record of one naming of
+a snapshot: stable caller ID, Name, Origin, Producer and Metadata, none of which affect the
+content hash. Two occurrences of equal bytes list independently, and assertions and lineage
+on one never appear on the other. `Occurrences` with `Content` finds every occurrence of
+some content, `Artifact` finds those of a snapshot, and `Name` and indexed `Metadata` filter.
+An identical retry returns the existing occurrence; different content under the same ID is
+ErrConflict, and `OccurrenceError.Committed` reports the stage.
+
+## Seekable access
+
+`OpenSeekable` returns a file that supports Seek and ReadAt, for backends that implement
+`storage.Seekable`. It hashes the whole file before returning, so the cost is one full read
+at open, and corruption fails the open. It does **not** re-verify later reads: a change to
+the stored file after open goes undetected. Backends without the capability return
+`cas.ErrCapability`; use [`spool`](adapters.md#spool) there.
+`Stat` reports size, mode and content without opening anything.
 
 ## Validation and evidence
 
@@ -196,7 +232,6 @@ classification defaults/conflicts, typed-claim spoof rejection and source bindin
 reopen/rebuild, exclusive policy roots, reader lifecycle, concurrent idempotent writes,
 cancellation, committed CAS cleanup errors and registration-failure recovery.
 
-`go test -race ./artifacts`, `go vet ./artifacts`, and `go build ./artifacts` pass.
-See [verification](verification.md) for integrated evidence. Disk-full, hard-link
-failure, power-loss ordering and every possible journal cleanup fault are not
-qualified merely by these focused artifact tests.
+See [verification](verification.md) for integrated evidence, including the 1,000,000-entry
+tree trial and crash qualification. Disk-full, hard-link failure and physical power loss are
+not qualified.

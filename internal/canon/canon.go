@@ -186,3 +186,32 @@ func value(d *json.Decoder, depth int, b *budget) (any, error) {
 		return t, nil
 	}
 }
+
+// IndexedScalar normalizes a value used as an exact-match index key: a string of
+// at most 256 bytes, a bool, or a signed 64-bit integer.
+func IndexedScalar(raw []byte) ([]byte, error) {
+	normalized, err := Normalize(raw)
+	if err != nil {
+		return nil, err
+	}
+	var value any
+	decoder := json.NewDecoder(bytes.NewReader(normalized))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	switch x := value.(type) {
+	case string:
+		if len(x) > 256 {
+			return nil, errors.New("indexed string exceeds 256 bytes")
+		}
+	case bool:
+	case json.Number:
+		if _, err := x.Int64(); err != nil {
+			return nil, errors.New("indexed number must be signed int64")
+		}
+	default:
+		return nil, errors.New("indexed value must be string, bool or int64")
+	}
+	return normalized, nil
+}

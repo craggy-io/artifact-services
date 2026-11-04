@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/craggy-io/artifact-services/artifacts"
+	"github.com/craggy-io/artifact-services/internal/journal"
 	"github.com/craggy-io/artifact-services/provenance"
 )
 
@@ -19,7 +21,30 @@ var (
 	ErrLimit               = errors.New("lineage: evidence or traversal work limit")
 	ErrClosed              = errors.New("lineage: service closed")
 	ErrCursor              = errors.New("lineage: invalid, expired or mismatched cursor")
+	// ErrHeadConflict reports a guarded history that did not have the expected head.
+	// It also matches ErrConflict, and the detail is in HeadConflictError.
+	ErrHeadConflict = errors.New("lineage: history head moved")
+	// ErrLeaseHeld reports another live owner of the journal root.
+	ErrLeaseHeld = journal.ErrLeaseHeld
 )
+
+// LeaseError carries the diagnostic identity of the live owner of a root.
+type LeaseError = journal.LeaseError
+
+// HeadConflictError reports what a guarded append expected and what it found.
+type HeadConflictError struct {
+	History          string
+	Expected, Actual ID
+}
+
+func (e *HeadConflictError) Error() string {
+	return fmt.Sprintf("lineage: history %s head is %q, expected %q", e.History, e.Actual, e.Expected)
+}
+
+// Is matches both ErrHeadConflict and the general ErrConflict.
+func (e *HeadConflictError) Is(target error) bool {
+	return target == ErrHeadConflict || target == ErrConflict
+}
 
 type RecordError struct {
 	ID        ID
@@ -64,17 +89,27 @@ type Relationship struct {
 	Metadata map[string]json.RawMessage `json:"metadata,omitempty"`
 	Evidence []Evidence                 `json:"evidence,omitempty"`
 }
+
+// Revision is one immutable history node. A History makes it part of a guarded
+// linear history: its one parent must be that history's head when it commits, or
+// no parent for the first revision. Without a History, Parents are free-form and
+// may branch, and Head does not apply.
 type Revision struct {
 	Artifact artifacts.ID               `json:"artifact"`
 	Parents  []ID                       `json:"parents,omitempty"`
+	History  string                     `json:"history,omitempty"`
 	Activity ID                         `json:"activity,omitempty"`
 	Metadata map[string]json.RawMessage `json:"metadata,omitempty"`
 }
+
+// Record is one journal record. Sequence is its commit position, set on reads and
+// ignored on writes, so a record read back can be replayed unchanged.
 type Record struct {
 	ID           ID            `json:"id"`
 	Activity     *Activity     `json:"activity,omitempty"`
 	Relationship *Relationship `json:"relationship,omitempty"`
 	Revision     *Revision     `json:"revision,omitempty"`
+	Sequence     uint64        `json:"sequence,omitempty"`
 }
 type Store interface {
 	Record(context.Context, Record) (ID, error)
@@ -82,24 +117,40 @@ type Store interface {
 	List(context.Context, Query) (Page, error)
 	Traverse(context.Context, TraversalQuery) (TraversalPage, error)
 }
+
+// Options binds one exclusive journal root and its persisted index policy. A
+// reference form whose validator is missing is rejected, never stored unchecked.
+// IndexedMetadata names metadata keys answerable by Query.Metadata as an index hit;
+// like the artifact catalog's, it is persisted and cannot change for a root.
+// MaxRecords and MaxBytes bound the journal, zero selecting defaults. Relaxed skips
+// the per-commit fsync: commits then survive process death but not OS crash.
 type Options struct {
-	Root             string
-	ValidateSelector func(context.Context, provenance.Ref) error
+	Root              string
+	ValidateSelector  func(context.Context, provenance.Ref) error
+	ValidateAssertion func(context.Context, string) error
+	IndexedMetadata   []string
+	MaxRecords        int
+	MaxBytes          int64
+	Relaxed           bool
 }
 
 // Query predicates are ANDed. Role requires Ref. An empty role matches any
 // reference position, including mapping endpoints; DependencyRole filters evidence.
+// Metadata is exact scalar equality over keys in Options.IndexedMetadata, and with
+// History it is an index hit rather than a journal scan.
 type Query struct {
-	Kind             string          `json:"kind,omitempty"`
-	ActivityKind     string          `json:"activity_kind,omitempty"`
-	RelationshipKind string          `json:"relationship_kind,omitempty"`
-	Ref              *provenance.Ref `json:"ref,omitempty"`
-	Role             string          `json:"role,omitempty"`
-	DependencyRole   string          `json:"dependency_role,omitempty"`
-	Activity         ID              `json:"activity,omitempty"`
-	IncludeInternal  bool            `json:"include_internal,omitempty"`
-	Limit            int             `json:"limit,omitempty"`
-	Cursor           string          `json:"-"`
+	Kind             string                     `json:"kind,omitempty"`
+	ActivityKind     string                     `json:"activity_kind,omitempty"`
+	RelationshipKind string                     `json:"relationship_kind,omitempty"`
+	Ref              *provenance.Ref            `json:"ref,omitempty"`
+	Role             string                     `json:"role,omitempty"`
+	DependencyRole   string                     `json:"dependency_role,omitempty"`
+	Activity         ID                         `json:"activity,omitempty"`
+	History          string                     `json:"history,omitempty"`
+	Metadata         map[string]json.RawMessage `json:"metadata,omitempty"`
+	IncludeInternal  bool                       `json:"include_internal,omitempty"`
+	Limit            int                        `json:"limit,omitempty"`
+	Cursor           string                     `json:"-"`
 }
 type Page struct {
 	Records    []Record

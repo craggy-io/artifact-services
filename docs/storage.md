@@ -14,7 +14,8 @@ Store opaque immutable blobs with a small streaming interface.
 - Open complete immutable blobs by key and check existence without loading payloads into memory.
 - Coordinate concurrent writers through the filesystem's create-if-absent hard link; one writer publishes each key.
 - Preserve publication outcomes in errors, including cleanup failures after commit, with cooperative context cancellation.
-- Use a local or mounted filesystem that supports atomic hard links; crash/power-loss durability and automatic crash recovery are not guaranteed.
+- Use a local or mounted filesystem that supports atomic hard links; a successful Put is flushed, name included, before it returns. See [durability](durability.md).
+- Open seekable files, stat blobs, and reclaim unreferenced ones through small optional interfaces.
 
 ## Mental model
 
@@ -42,6 +43,17 @@ The detailed error, cancellation, and publication [contract](storage.md#semantic
 - `Put(ctx context.Context, key string, source io.Reader) error`
 - `Open(ctx context.Context, key string) (io.ReadCloser, error)`
 - `Exists(ctx context.Context, key string) (bool, error)`
+
+Optional capabilities, implemented by `Filesystem`, so other backends stay honest:
+
+- `Seekable`: `OpenSeekable(ctx, key) (File, error)`, with Seek and ReadAt
+- `Stater`: `Stat(ctx, key) (Info, error)`
+- `Reclaimer`: `Walk`, `Remove(ctx, key, olderThan) (bool, error)`, `SweepPending(ctx, olderThan) (int, error)`
+
+`Remove` deletes a blob only if it is older than the given time, and a repeat `Put` of an
+existing key refreshes that time, so recently stored content is spared. Storage knows nothing
+about what refers to a blob: [`gc`](adapters.md#gc) decides that. `SweepPending` clears
+abandoned temporary files.
 
 ## Working with other layers
 
@@ -86,14 +98,15 @@ and publication, not hashing, identity validation, deduplication, or metadata.
   the last read does not manufacture a Close error.
 
 The root must be private/trusted; external edits, symlinks, and junctions are
-unsupported. No deletion/lifecycle API exists. A Docker-mounted root needs no
+unsupported. Deletion exists only through `Reclaimer`, with no lifecycle policy. A Docker-mounted root needs no
 special code, but its filesystem must support atomic non-replacing hard links.
 Unsupported filesystems return errors; there is no copy/overwrite fallback.
 Relative roots are resolved when NewFilesystem is called; later working-directory
 changes do not retarget the store. Independent processes sharing a root rely on
 the filesystem's hard-link create-if-absent operation, not a process-local mutex.
-Directory entries are not synced, so crash/power-loss durability is not guaranteed.
-Crashes can leave temporary files; automatic crash recovery is not implemented.
+A successful Put has synced the file and flushed its name; see [durability](durability.md)
+for what that does and does not qualify. A crash can leave temporary files, which are never
+visible as blobs.
 
 ## Validation and evidence
 

@@ -47,17 +47,31 @@ type Column struct {
 	Shape  Shape  `json:"shape"`
 	Unique bool   `json:"unique,omitempty"`
 }
+
+// SchemaDefinition describes a table or JSON document. Key names the column IDs that
+// identify a table row: row IDs are then derived from those values (see KeyRowID),
+// are optional in the data, and must match if present. Key columns must be
+// non-nullable strings, integers or booleans, whose canonical forms are exact.
 type SchemaDefinition struct {
 	Version string   `json:"version"`
 	Model   string   `json:"model"`
 	Columns []Column `json:"columns,omitempty"`
 	JSON    *Shape   `json:"json,omitempty"`
+	Key     []string `json:"key,omitempty"`
 }
 
 // Row values use stable column IDs, not mutable display names or offsets.
 type Row struct {
-	ID     string         `json:"id"`
+	ID     string         `json:"id,omitempty"`
 	Values map[string]any `json:"values"`
+}
+
+// RowStream yields rows in stored order. Next returns io.EOF at the end, which is
+// also when the content digest is verified: rows returned before EOF are not yet
+// proven. Callers must Close it.
+type RowStream interface {
+	Next() (Row, error)
+	Close() error
 }
 type ValidationRequest struct {
 	Data     artifacts.ID

@@ -174,16 +174,8 @@ func TestTypedClaimCannotBeSpoofed(t *testing.T) {
 	if _, err := f.service.PublishValidated(context.Background(), source, typedclaim.Claim{}); !errors.Is(err, ErrUnvalidated) {
 		t.Fatal(err)
 	}
-	encodedManifest, encoded, err := normalizeManifest(bad, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = encodedManifest
-	forged, err := f.content.Put(context.Background(), bytes.NewReader(encoded))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.service.ValidatedClaim(context.Background(), ID(forged.ID)); !errors.Is(err, ErrUnvalidated) {
+	forged := storeUnregistered(t, f, bad)
+	if _, err := f.service.ValidatedClaim(context.Background(), forged); !errors.Is(err, ErrUnvalidated) {
 		t.Fatal("CAS metadata forged accepted claim", err)
 	}
 	claim := typedclaim.New(string(schemaID), string(dataID), "objects-v1", "jsonl-v1")
@@ -413,10 +405,12 @@ func TestManifestBounds(t *testing.T) {
 	f := newFixture(t)
 	base := f.manifest(t, "file", "x")
 	oversized := base
-	oversized.Entries = make([]Entry, MaxEntries+1)
+	f.service.options.MaxEntries = 1
+	oversized.Entries = make([]Entry, 2)
 	if _, err := f.service.Publish(context.Background(), oversized); !errors.Is(err, ErrInvalidManifest) {
 		t.Fatal(err)
 	}
+	f.service.options.MaxEntries = defaultMaxEntries
 	oversized = base
 	oversized.Metadata = map[string]json.RawMessage{"large": json.RawMessage(`"` + strings.Repeat("a", maxMetadataBytes) + `"`)}
 	if _, err := f.service.Publish(context.Background(), oversized); !errors.Is(err, ErrInvalidManifest) {
@@ -437,7 +431,7 @@ func TestAuthoritativeCategory(t *testing.T) {
 	}
 	// Category is backed by immutable registration even if the derived view needs rebuild.
 	f.service.mu.Lock()
-	f.service.catalog = map[ID]membership{}
+	f.service.index = newCatalogIndex()
 	f.service.mu.Unlock()
 	if category, err := f.service.Category(context.Background(), id); err != nil || category != observability.Internal {
 		t.Fatal(category, err)
@@ -446,18 +440,42 @@ func TestAuthoritativeCategory(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw := f.manifest(t, "other", "unregistered")
-	_, encoded, err := normalizeManifest(raw, false)
+	blob := storeUnregistered(t, f, raw)
+	if _, err := f.service.Category(context.Background(), blob); !errors.Is(err, ErrNotFound) {
+		t.Fatal(err)
+	}
+	if _, err := f.service.Get(context.Background(), blob); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// storeUnregistered puts a manifest directly into CAS, as code holding only the
+// CAS handle could, bypassing every catalog check.
+func storeUnregistered(t *testing.T, f fixture, m Manifest) ID {
+	t.Helper()
+	ctx := context.Background()
+	writer := &blockWriter{}
+	writer.flush = func(encoded []byte, first string, count int) error {
+		put, err := f.content.Put(ctx, bytes.NewReader(encoded))
+		writer.root.Blocks = append(writer.root.Blocks, blockRef{ID: put.ID, First: first, Count: count})
+		return err
+	}
+	for _, e := range m.Entries {
+		if err := writer.add(e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.finish(); err != nil {
+		t.Fatal(err)
+	}
+	writer.root.Metadata = m.Metadata
+	encoded, err := canon.Marshal(writer.root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	blob, err := f.content.Put(context.Background(), bytes.NewReader(encoded))
+	blob, err := f.content.Put(ctx, bytes.NewReader(encoded))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.Category(context.Background(), ID(blob.ID)); !errors.Is(err, ErrNotFound) {
-		t.Fatal(err)
-	}
-	if _, err := f.service.Get(context.Background(), ID(blob.ID)); err != nil {
-		t.Fatal(err)
-	}
+	return ID(blob.ID)
 }

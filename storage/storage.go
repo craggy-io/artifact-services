@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"time"
 )
 
 var (
@@ -54,4 +55,35 @@ type Store interface {
 	Open(ctx context.Context, key string) (io.ReadCloser, error)
 	// Exists returns false, nil for a missing key, and propagates other errors.
 	Exists(ctx context.Context, key string) (bool, error)
+}
+
+// Info describes a published blob.
+type Info struct {
+	Size    int64
+	ModTime time.Time
+}
+
+// Stater is an optional capability: metadata without opening the blob.
+type Stater interface {
+	Stat(ctx context.Context, key string) (Info, error)
+}
+
+// File is a seekable blob handle, owned by the caller.
+type File interface {
+	io.ReadSeekCloser
+	io.ReaderAt
+}
+
+// Seekable is an optional capability for backends whose blobs are plain files at
+// a stable location. Storage verifies nothing: see cas.Service.OpenSeekable.
+type Seekable interface {
+	OpenSeekable(ctx context.Context, key string) (File, error)
+}
+
+// Reclaimer is an optional capability that deliberately breaks immutability's
+// "published means forever", for tooling that has fenced writers itself.
+type Reclaimer interface {
+	Walk(ctx context.Context, visit func(key string, info Info) error) error
+	Remove(ctx context.Context, key string, olderThan time.Time) (bool, error)
+	SweepPending(ctx context.Context, olderThan time.Time) (int, error)
 }

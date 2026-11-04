@@ -60,6 +60,8 @@ are not evidence that the same history or activity was used.
 - `Put(ctx context.Context, source io.Reader) (PutResult, error)`
 - `Open(ctx context.Context, id ID) (io.ReadCloser, error)`
 - `Exists(ctx context.Context, id ID) (bool, error)`
+- `OpenSeekable(ctx, id) (SeekableFile, error)`: hashes the whole file before returning. Later reads are not re-verified. Requires a seekable backend, or returns `ErrCapability`
+- `Stat(ctx, id) (int64, error)`: size without opening, checking presence and not integrity. Requires a backend with `Stat`, or returns `ErrCapability`
 
 The last three methods form `cas.Store`, implemented by Service. Operations are
 safe for concurrent use; individual returned readers require serial Read/Close.
@@ -137,9 +139,9 @@ do not treat a returned ID by itself as proof that content became available.
   underlying publication. Storage's atomic-publication boundary remains authoritative:
   cancellation racing that boundary can still leave committed content.
 - Staging can require temporary disk space in addition to storage's temporary copy.
-  Process termination can leave staging files. There is no automatic crash recovery,
-  quota service, staging garbage collector, or stronger durability guarantee than
-  the underlying storage backend. Roots/content must remain trusted and immutable.
+  Process termination can leave staging files, which nothing reads again. There is no
+  quota service or stronger durability guarantee than the underlying storage backend; see
+  [durability](durability.md). Roots/content must remain trusted and immutable.
 
 ## Validation and evidence
 
@@ -149,8 +151,8 @@ missing blobs, corruption on Open/reuse, source errors/cancellation, published a
 staging-cleanup failures, duplicate-plus-cleanup error preservation, final-byte EOF,
 early close, repeat close, and explicit internal observation. An 8 MiB generated
 stream verifies bounded read chunking without a whole-payload input buffer.
-Cleanup failure injection is package-private; filesystem disk-full/sync failures
-and crash durability are not qualified. The [1 GiB storage baseline](verification.md)
+Cleanup failure injection is package-private; filesystem disk-full/sync failures are not
+qualified. Process-kill behaviour is covered by [crash qualification](verification.md#crash-qualification). The [1 GiB storage baseline](verification.md)
 is not itself a CAS throughput or memory measurement; a separate CAS-over-storage
 1 GiB trial (`TestLargeCAS1GiB`) is documented alongside it in
 [verification](verification.md).

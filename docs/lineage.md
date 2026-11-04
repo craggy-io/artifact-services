@@ -50,13 +50,11 @@ Actor/external links remain opaque external identifiers. Metadata is canonical J
 An identical canonical record/category retry returns the same ID; conflicting reuse
 returns ErrConflict. Arrays retain their order as part of record identity.
 
-Authoritative records are immutable JSON journal entries under an exclusive root
-lease. Append publication and the in-memory record projection update synchronously;
-a fresh query sees successful prior records. Opening the store replays the journal
-to rebuild that projection. No background lag or eventual-consistency mode exists.
-The current backend permits one live Service per root; close it before reopening.
-A crashed owner's `.lease` requires explicit operator recovery after confirming no
-owner remains. Directory entries are not synced; power-loss durability is unqualified.
+Authoritative records are immutable journal entries under an exclusive root lease, each
+stamped with `Record.Sequence`. Commit and index update happen in one critical section, so
+a fresh query sees successful prior records, with no background lag. Opening replays the
+journal into a resident key index and offsets, not record values. One live Service owns a
+root; a dead owner's lease disappears with it. See [durability](durability.md).
 
 ## Public interfaces
 
@@ -66,6 +64,9 @@ owner remains. Directory entries are not synced; power-loss durability is unqual
 - `Get(ctx context.Context, id ID) (Record, error)`
 - `List(ctx context.Context, query Query) (Page, error)`
 - `Traverse(ctx context.Context, query TraversalQuery) (TraversalPage, error)`
+- `Append(ctx, AppendRevision) (ID, error)`, `Head(ctx, history) (ID, error)`, `HeadAt(ctx, history, sequence) (ID, error)`
+- `Sequence(ctx) (uint64, error)`, `OnCommit(func(uint64)) (stop func())`, `Changes(ctx, provenance.ChangeQuery) (provenance.ChangePage, error)`
+- `ValidateRevision(ctx, revision, artifact) error`, `ValidateActivity(ctx, id) error`
 
 `Options` contains Root and `ValidateSelector func(context.Context, provenance.Ref)
 error`. Supply Objects' ValidateRef for actual row/column membership validation.
@@ -190,6 +191,39 @@ reads and traversal; it cannot interrupt arbitrary blocked I/O. Canceled/failed
 pages are not returned as complete. Parent failures remain observable even when
 supporting work is internal. Closed services reject further operations.
 
+## Reference forms
+
+`provenance.Ref` addresses one thing, identified by `Ref.Form()`. `Validate` rejects mixed
+forms and missing companions, and a form with no resolver at record time is
+`ErrUnsupportedForm` rather than being stored unchecked.
+
+| Form | Fields | Means |
+| --- | --- | --- |
+| Snapshot | `Artifact`, optional `Revision` | That snapshot |
+| Occurrence | `Occurrence` | That one publication; never follows content |
+| Content | `Digest`, optional `Offset` and `Length` | Those bytes, across occurrences |
+| Path | Exactly one of `Artifact` or `Occurrence`, `Path`, optional `Offset` and `Length` | A file, or bytes in it |
+| Row, cell, column | `Artifact`, `Revision`, `Row` and/or `Column`; a column also needs `Schema` | Table selectors, checked by `ValidateSelector` |
+| Assertion | `Assertion` | Checked by `ValidateAssertion` |
+| Activity | `Activity` | A lineage activity record |
+| External | `URL`, `Retrieval` | A source outside the store, pinned to one retrieval |
+
+A row in a keyed table has an ID derived from its key columns (`objects.KeyRowID`), so a
+reference can name it without knowing its position.
+
+## Guarded histories and indexed lookup
+
+`Append` adds a revision to a named `History` with an optional `Expected` head. If another
+writer advanced it first, it fails with `HeadConflictError` (matching `ErrHeadConflict`),
+naming the expected and actual heads. The check and the append are one commit, so two
+writers racing from one head yield one success and one conflict. `Head` reads the tip, and
+`HeadAt` reads it as of a sequence. Records written with `Record` and explicit `Parents`
+keep their branching behaviour.
+
+`Options.IndexedMetadata` names metadata keys to index, fixed by the root's policy. Then
+`Query.Metadata` finds records by exact scalar value through the index rather than a scan,
+using the same cursors as other queries.
+
 ## Validation and evidence
 
 Focused tests exercise the real storage/CAS/artifact stack: independent histories
@@ -198,4 +232,5 @@ concurrent appends, snapshot paging under new commits, classification conflicts,
 registered-reference enforcement, hidden bare artifacts, row/column join/group and
 predicate evidence, selector mismatch/capability rejection, cycles, bounds,
 cancellation and closed-cursor rejection. `go test -race ./lineage ./provenance`,
-vet and build pass. No crash/power-loss or disk-full guarantees are claimed.
+vet and build pass. See [verification](verification.md) for crash qualification. Disk-full
+and physical power loss are not qualified.

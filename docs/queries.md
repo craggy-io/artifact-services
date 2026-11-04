@@ -168,8 +168,9 @@ query, keeping resumed work unambiguous.
 the same mutex used for registration/record projection. Commits and projection
 updates are synchronous, so no asynchronous index wait is required. Later commits do not enter
 subsequent pages. Ordering and membership remain fixed, so concurrent appends
-cannot create duplicates or skipped members within a cursor session. File-list
-snapshots are the immutable manifest ID and need no live-index watermark.
+cannot create duplicates or skipped members within a cursor session. A file listing is
+already fixed by its immutable manifest ID, so its cursor is a sealed position with no
+cached snapshot; it still belongs to one live service.
 
 Cursor sessions expire 15 minutes after the first page (not sliding on access).
 Expired, invalid, mismatched, or previous-service-instance cursors return errors;
@@ -177,9 +178,25 @@ callers restart rather than silently switching views. Snapshots are copied into 
 bounded cache and remain replayable across artifact Rebuild within the same live
 service. Reopening a service invalidates its old cursors. Each cache allows 128
 sessions, 16 MiB per snapshot, and 64 MiB total; exhaustion is an explicit error.
+Catalog, record and assertion snapshots hold compact positions rather than whole values.
 Traversal computes bounded adjacency/results before paging; it does not expose an
 unbounded graph or promise stateless cursors. Limits on decoded evidence and
 adjacency are separate from result/page limits; see [lineage limits](lineage.md).
+
+## Change feeds
+
+Artifacts, lineage and assertions each expose the same three calls:
+
+- `Sequence` returns the latest committed sequence. It increases by exactly one per commit
+  and survives reopen.
+- `Changes(ctx, ChangeQuery{After, Limit, IncludeInternal})` returns committed records in
+  sequence order: class, ID, kind, actor, activity. `ChangePage.Last` is where to resume, also
+  when internal records were filtered out. It is stateless and survives restart.
+- `OnCommit(hook)` calls a hook after commit with a recent sequence. Delivery is **coalesced**:
+  a slow hook sees the latest sequence and not each one, and never blocks a commit. Treat it
+  as "something changed, read `Changes` from your position", which is what makes it lossless.
+
+Each journal has its own sequence. There is no global order across journals.
 
 ## Authoritative facts, indexes, and visibility
 
@@ -190,23 +207,19 @@ and commits the manifest, then idempotently registers its ID in that ledger.
 An identical snapshot has one catalog membership regardless of repeated Publish.
 Successful Publish requires both steps; payload availability alone is insufficient.
 
-The lineage layer owns append-only record persistence with atomic unique-ID
-validation and ordered commit sequence numbers. Identical retries reuse a record;
-conflicting reuse fails. Artifact membership and lineage records each use their own
-journal root. Files contain versioned canonical JSON envelopes, published by syncing
-a temporary file and creating an immutable hard link at the sequence filename.
-The shared internal journal is an implementation utility, not a new public layer.
-Canonical JSON bounds both input and expanded output to 8 MiB; duplicate members,
-excessive nesting/numeric expansion, and malformed persisted envelopes are rejected.
+Artifacts, lineage and assertions each own one journal root: a single append-only log of
+checksummed records with atomic unique-ID validation and contiguous per-root sequences.
+Identical retries reuse a record; conflicting reuse fails. The shared internal journal is an
+implementation utility, not a new public layer. A record is bounded to 8 MiB; duplicate
+members, excessive nesting/numeric expansion, and malformed records are rejected.
 
-Each journal has an exclusive `.lease` file: only one live service owns a root.
-Call Close to release it. A crashed owner's stale lease requires manual removal
-only after confirming that no owner remains; automatic crash recovery is not
-implemented. Journal roots are trusted directories, like blob roots. The defaults
-are 100,000 records, 128 MiB encoded ledger data, and 8 MiB per record; these bound
-replay and projection memory. Duplicate IDs, broken sequences, malformed records,
-and incompatible stored policy are errors on reopen. Directory-entry durability,
-power-loss recovery, and disk-full/sync fault behavior are not qualified.
+Each root is owned by one live service through an OS file lock released when its owner
+dies. Journal roots are trusted directories, like blob roots. The defaults are 20,000,000
+records and 64 GiB, settable with `MaxRecords` and `MaxBytes`. Only keys and offsets stay
+resident, plus each layer's indexes, so memory grows with record count, not record size.
+Duplicate IDs, broken sequences, damage other than a torn tail, and incompatible stored policy
+are errors on reopen. See [durability](durability.md) for the commit protocol and
+[stability](stability.md) for formats.
 
 Commit and projection update are synchronous under the owning layer's lock.
 Successful Publish/Record is visible to subsequent fresh matching queries; an old

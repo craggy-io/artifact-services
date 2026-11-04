@@ -1,12 +1,16 @@
 package lineage
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
 
 	"github.com/craggy-io/artifact-services/artifacts"
+	"github.com/craggy-io/artifact-services/internal/canon"
+	"github.com/craggy-io/artifact-services/internal/journal"
 	"github.com/craggy-io/artifact-services/internal/pager"
 	"github.com/craggy-io/artifact-services/observability"
 	"github.com/craggy-io/artifact-services/provenance"
@@ -52,7 +56,9 @@ func queryValid(q Query) error {
 	return nil
 }
 func matchesRef(want, have provenance.Ref) bool {
-	return (want.Artifact == "" || want.Artifact == have.Artifact) && (want.Revision == "" || want.Revision == have.Revision) && (want.Schema == "" || want.Schema == have.Schema) && (want.Row == "" || want.Row == have.Row) && (want.Column == "" || want.Column == have.Column)
+	return (want.Artifact == "" || want.Artifact == have.Artifact) && (want.Revision == "" || want.Revision == have.Revision) && (want.Schema == "" || want.Schema == have.Schema) && (want.Row == "" || want.Row == have.Row) && (want.Column == "" || want.Column == have.Column) &&
+		(want.Occurrence == "" || want.Occurrence == have.Occurrence) && (want.Digest == "" || want.Digest == have.Digest) && (want.Path == "" || want.Path == have.Path) && (want.Length == 0 || want.Offset == have.Offset && want.Length == have.Length) &&
+		(want.Assertion == "" || want.Assertion == have.Assertion) && (want.Activity == "" || want.Activity == have.Activity) && (want.URL == "" || want.URL == have.URL) && (want.Retrieval == "" || want.Retrieval == have.Retrieval)
 }
 func canonicalRef(ref provenance.Ref) provenance.Ref {
 	if ref.Row != "" && ref.Column == "" {
@@ -80,6 +86,11 @@ func (s *Service) List(ctx context.Context, q Query) (page Page, result error) {
 	if err := queryValid(q); err != nil {
 		return page, err
 	}
+	metadata, err := s.normalizePredicates(q.Metadata)
+	if err != nil {
+		return page, err
+	}
+	q.Metadata = metadata
 	if q.Cursor == "" && q.Ref != nil && q.Ref.Detailed() {
 		if s.options.ValidateSelector == nil {
 			return page, ErrUnsupportedSelector
@@ -93,104 +104,40 @@ func (s *Service) List(ctx context.Context, q Query) (page Page, result error) {
 	}
 	cursor := q.Cursor
 	q.Cursor = ""
-	records, next, err := s.pages.Page(q, cursor, q.Limit, func() ([]Record, error) {
-		values, err := s.snapshot()
-		if err != nil {
-			return nil, err
-		}
-		out := []Record{}
-		work := 0
+	sequences, next, err := s.pages.Page(q, cursor, q.Limit, func() ([]uint64, error) {
 		scanned := int64(0)
 		defer func() {
 			if scanned > 0 {
 				span.Count("scanned", scanned)
 			}
 		}()
-		budget := &mappingBudget{}
-		for _, p := range values {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-			if !q.IncludeInternal && p.Category == observability.Internal {
-				continue
-			}
-			r := p.Record
-			if q.Kind != "" && kind(r) != q.Kind {
-				continue
-			}
-			if q.ActivityKind != "" && (r.Activity == nil || r.Activity.Kind != q.ActivityKind) {
-				continue
-			}
-			if q.RelationshipKind != "" && (r.Relationship == nil || r.Relationship.Kind != q.RelationshipKind) {
-				continue
-			}
-			if q.Activity != "" {
-				var establishing ID
-				if r.Relationship != nil {
-					establishing = r.Relationship.Activity
-				}
-				if r.Revision != nil {
-					establishing = r.Revision.Activity
-				}
-				if establishing != q.Activity {
-					continue
-				}
-			}
-			match := q.Ref == nil
-			if q.Ref != nil {
-				want := s.resolve(*q.Ref)
-				visit := func(role string, ref provenance.Ref) {
-					if (q.Role == "" || q.Role == role) && matchesRef(want, s.resolve(ref)) {
-						match = true
-					}
-				}
-				if q.DependencyRole == "" {
-					if a := r.Activity; a != nil {
-						for _, ref := range a.Inputs {
-							visit("input", ref)
-						}
-						for _, ref := range a.Outputs {
-							visit("output", ref)
-						}
-					}
-					if e := r.Relationship; e != nil {
-						visit("from", e.From)
-						visit("to", e.To)
-					}
-					if v := r.Revision; v != nil {
-						visit("snapshot", provenance.Ref{Artifact: string(v.Artifact), Revision: string(r.ID)})
-						for _, parent := range v.Parents {
-							visit("parent", provenance.Ref{Revision: string(parent)})
-						}
-					}
-				}
-				if !match && (q.Role == "" || q.Role == "input" || q.Role == "output") {
-					err = s.eachMappingBudget(ctx, r, budget, func(_ int, _ Evidence, m provenance.Mapping) error {
-						work += len(m.Inputs) + 1
-						if work > 100000 {
-							return ErrLimit
-						}
-						if q.DependencyRole == "" && (q.Role == "" || q.Role == "output") && matchesRef(want, s.resolve(m.Output)) {
-							match = true
-						}
-						for _, d := range m.Inputs {
-							if (q.DependencyRole == "" || q.DependencyRole == d.Role) && (q.Role == "" || q.Role == "input") && matchesRef(want, s.resolve(d.Ref)) {
-								match = true
-							}
-						}
-						return nil
-					})
-					if err != nil {
-						return nil, err
-					}
-				}
-			}
-			scanned++
-			if match {
-				out = append(out, r)
-			}
+		type hit struct {
+			id       ID
+			sequence uint64
 		}
-		return out, nil
+		hits := []hit{}
+		budget := &mappingBudget{}
+		work := 0
+		visit := func(p persisted) error {
+			scanned++
+			match, err := s.matchRecord(ctx, q, p, budget, &work)
+			if err != nil {
+				return err
+			}
+			if match {
+				hits = append(hits, hit{p.Record.ID, p.Record.Sequence})
+			}
+			return nil
+		}
+		if err := s.eachCandidate(ctx, q, visit); err != nil {
+			return nil, err
+		}
+		sort.Slice(hits, func(i, j int) bool { return hits[i].id < hits[j].id })
+		ordered := make([]uint64, len(hits))
+		for i, h := range hits {
+			ordered[i] = h.sequence
+		}
+		return ordered, nil
 	})
 	if err != nil {
 		return page, queryFailure(err)
@@ -198,8 +145,156 @@ func (s *Service) List(ctx context.Context, q Query) (page Page, result error) {
 	if err := ctx.Err(); err != nil {
 		return page, err
 	}
+	records := make([]Record, 0, len(sequences))
+	for _, sequence := range sequences {
+		entry, err := s.journal.At(sequence)
+		if err != nil {
+			return page, err
+		}
+		p, err := decodePersisted(entry)
+		if err != nil {
+			return page, err
+		}
+		records = append(records, p.Record)
+	}
 	span.Count("returned", int64(len(records)))
 	return Page{Records: records, NextCursor: next}, nil
+}
+
+// eachCandidate answers from an index when the query has an indexed predicate, so
+// the scanned count is the matching records rather than the whole journal.
+func (s *Service) eachCandidate(ctx context.Context, q Query, visit func(persisted) error) error {
+	s.mu.RLock()
+	var lists [][]uint64
+	if q.History != "" {
+		lists = append(lists, s.histories.Snapshot(q.History))
+	}
+	for key, value := range q.Metadata {
+		lists = append(lists, s.metadata.Snapshot(journal.IndexKey(key, string(value))))
+	}
+	s.mu.RUnlock()
+	if len(lists) > 0 {
+		sort.Slice(lists, func(i, j int) bool { return len(lists[i]) < len(lists[j]) })
+		for _, sequence := range lists[0] {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			entry, err := s.journal.At(sequence)
+			if err != nil {
+				return err
+			}
+			p, err := decodePersisted(entry)
+			if err != nil {
+				return err
+			}
+			if err := visit(p); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return s.journal.Scan(ctx, 0, 0, func(entry journal.Entry) error {
+		p, err := decodePersisted(entry)
+		if err != nil {
+			return err
+		}
+		return visit(p)
+	})
+}
+
+func (s *Service) matchRecord(ctx context.Context, q Query, p persisted, budget *mappingBudget, work *int) (bool, error) {
+	if !q.IncludeInternal && p.Category == observability.Internal {
+		return false, nil
+	}
+	r := p.Record
+	if q.Kind != "" && kind(r) != q.Kind {
+		return false, nil
+	}
+	if q.ActivityKind != "" && (r.Activity == nil || r.Activity.Kind != q.ActivityKind) {
+		return false, nil
+	}
+	if q.RelationshipKind != "" && (r.Relationship == nil || r.Relationship.Kind != q.RelationshipKind) {
+		return false, nil
+	}
+	if q.History != "" && (r.Revision == nil || r.Revision.History != q.History) {
+		return false, nil
+	}
+	if len(q.Metadata) > 0 {
+		metadata := recordMetadata(r)
+		for key, value := range q.Metadata {
+			have, ok := metadata[key]
+			if !ok {
+				return false, nil
+			}
+			normalized, err := canon.IndexedScalar(have)
+			if err != nil || !bytes.Equal(normalized, value) {
+				return false, nil
+			}
+		}
+	}
+	if q.Activity != "" {
+		var establishing ID
+		if r.Relationship != nil {
+			establishing = r.Relationship.Activity
+		}
+		if r.Revision != nil {
+			establishing = r.Revision.Activity
+		}
+		if establishing != q.Activity {
+			return false, nil
+		}
+	}
+	if q.Ref == nil {
+		return true, nil
+	}
+	match := false
+	want := s.resolve(*q.Ref)
+	check := func(role string, ref provenance.Ref) {
+		if (q.Role == "" || q.Role == role) && matchesRef(want, s.resolve(ref)) {
+			match = true
+		}
+	}
+	if q.DependencyRole == "" {
+		if a := r.Activity; a != nil {
+			for _, ref := range a.Inputs {
+				check("input", ref)
+			}
+			for _, ref := range a.Outputs {
+				check("output", ref)
+			}
+		}
+		if e := r.Relationship; e != nil {
+			check("from", e.From)
+			check("to", e.To)
+		}
+		if v := r.Revision; v != nil {
+			check("snapshot", provenance.Ref{Artifact: string(v.Artifact), Revision: string(r.ID)})
+			for _, parent := range v.Parents {
+				check("parent", provenance.Ref{Revision: string(parent)})
+			}
+		}
+	}
+	if !match && (q.Role == "" || q.Role == "input" || q.Role == "output") {
+		err := s.eachMappingBudget(ctx, r, budget, func(_ int, _ Evidence, m provenance.Mapping) error {
+			*work += len(m.Inputs) + 1
+			if *work > 100000 {
+				return ErrLimit
+			}
+			if q.DependencyRole == "" && (q.Role == "" || q.Role == "output") && matchesRef(want, s.resolve(m.Output)) {
+				match = true
+			}
+			for _, d := range m.Inputs {
+				if (q.DependencyRole == "" || q.DependencyRole == d.Role) && (q.Role == "" || q.Role == "input") && matchesRef(want, s.resolve(d.Ref)) {
+					match = true
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return false, err
+		}
+	}
+	return match, nil
 }
 
 type traversalItem struct {
@@ -294,18 +389,39 @@ func (s *Service) Traverse(ctx context.Context, q TraversalQuery) (page Traversa
 	span.Count("returned_edges", int64(len(page.Edges)))
 	return page, nil
 }
-func (s *Service) traverseSnapshot(ctx context.Context, q TraversalQuery) ([]traversalItem, error) {
-	values, err := s.snapshot()
-	if err != nil {
-		return nil, err
+
+// recordMetadata returns a record's caller metadata, whichever payload it has.
+func recordMetadata(r Record) map[string]json.RawMessage {
+	switch {
+	case r.Activity != nil:
+		return r.Activity.Metadata
+	case r.Relationship != nil:
+		return r.Relationship.Metadata
+	case r.Revision != nil:
+		return r.Revision.Metadata
 	}
-	records := map[ID]persisted{}
-	for _, p := range values {
-		records[p.Record.ID] = p
+	return nil
+}
+
+func (s *Service) traverseSnapshot(ctx context.Context, q TraversalQuery) ([]traversalItem, error) {
+	// Records stream from the journal, bounded to the sequence at the start. Only
+	// edges within the work budget, and revisions actually mentioned, stay resident.
+	watermark := s.journal.Sequence()
+	records := map[ID]*persisted{}
+	lookup := func(id ID) *persisted {
+		if p, ok := records[id]; ok {
+			return p
+		}
+		var found *persisted
+		if p, ok := s.lookup(id); ok && p.Record.Sequence <= watermark {
+			found = &p
+		}
+		records[id] = found
+		return found
 	}
 	resolve := func(ref provenance.Ref) provenance.Ref {
 		if ref.Revision != "" && ref.Artifact == "" {
-			if p, ok := records[ID(ref.Revision)]; ok && p.Record.Revision != nil {
+			if p := lookup(ID(ref.Revision)); p != nil && p.Record.Revision != nil {
 				ref.Artifact = string(p.Record.Revision.Artifact)
 			}
 		}
@@ -332,7 +448,7 @@ func (s *Service) traverseSnapshot(ctx context.Context, q TraversalQuery) ([]tra
 			return nil
 		}
 		total++
-		workBytes += len(e.Expression) + len(e.ID) + len(e.From.Artifact) + len(e.From.Revision) + len(e.From.Schema) + len(e.From.Row) + len(e.From.Column) + len(e.To.Artifact) + len(e.To.Revision) + len(e.To.Schema) + len(e.To.Row) + len(e.To.Column) + 128
+		workBytes += len(e.Expression) + len(e.ID) + e.From.Weight() + e.To.Weight() + 128
 		if total > 100000 || workBytes > 32<<20 {
 			return ErrLimit
 		}
@@ -347,21 +463,22 @@ func (s *Service) traverseSnapshot(ctx context.Context, q TraversalQuery) ([]tra
 		}
 		return nil
 	}
-	for _, p := range values {
-		if err := ctx.Err(); err != nil {
-			return nil, err
+	err := s.journal.Scan(ctx, 0, watermark, func(entry journal.Entry) error {
+		p, err := decodePersisted(entry)
+		if err != nil {
+			return err
 		}
 		r := p.Record
 		internal := p.Category == observability.Internal
 		if e := r.Relationship; e != nil {
 			if err := add(Edge{ID: string(r.ID), Kind: e.Kind, From: e.From, To: e.To, Activity: e.Activity}, internal); err != nil {
-				return nil, err
+				return err
 			}
 		}
 		if v := r.Revision; v != nil {
 			for _, parent := range v.Parents {
 				if err := add(Edge{ID: fmt.Sprintf("%s/%s", r.ID, parent), Kind: "revision-of", From: provenance.Ref{Revision: string(r.ID), Artifact: string(v.Artifact)}, To: provenance.Ref{Revision: string(parent)}, Activity: v.Activity}, internal); err != nil {
-					return nil, err
+					return err
 				}
 			}
 		}
@@ -401,9 +518,13 @@ func (s *Service) traverseSnapshot(ctx context.Context, q TraversalQuery) ([]tra
 				return nil
 			})
 			if err != nil {
-				return nil, err
+				return err
 			}
 		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	for key := range adjacency {
 		sort.Slice(adjacency[key], func(i, j int) bool {
@@ -436,9 +557,22 @@ func (s *Service) traverseSnapshot(ctx context.Context, q TraversalQuery) ([]tra
 			return true
 		}
 		if ref.Revision != "" {
-			if p, ok := records[ID(ref.Revision)]; ok && p.Category == observability.Internal {
+			if p := lookup(ID(ref.Revision)); p != nil && p.Category == observability.Internal {
 				return false
 			}
+		}
+		if ref.Occurrence != "" {
+			key := "occurrence/" + ref.Occurrence
+			if v, ok := visibility[key]; ok {
+				return v
+			}
+			occurrence, e := s.artifacts.GetOccurrence(observability.WithInternal(ctx), artifacts.OccurrenceID(ref.Occurrence))
+			if e != nil {
+				visibilityErr = e
+				return false
+			}
+			visibility[key] = occurrence.Category != observability.Internal
+			return visibility[key]
 		}
 		if ref.Artifact != "" {
 			if v, ok := visibility[ref.Artifact]; ok {

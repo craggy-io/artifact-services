@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/craggy-io/artifact-services/artifacts"
 	"github.com/craggy-io/artifact-services/internal/canon"
@@ -22,6 +23,7 @@ type queryTable struct {
 	input      Input
 	schema     artifacts.ID
 	definition SchemaDefinition
+	path       string
 	rows       []Row
 }
 type boundRow struct {
@@ -374,7 +376,7 @@ func normalizeRequest(q QueryRequest) (QueryRequest, error) {
 	}
 	return q, nil
 }
-func (s *Service) loadTable(ctx context.Context, in Input) (*queryTable, error) {
+func (s *Service) describeTable(ctx context.Context, in Input) (*queryTable, error) {
 	d, schema, m, encoding, err := s.typed(ctx, in.Artifact)
 	if err != nil {
 		return nil, err
@@ -382,25 +384,40 @@ func (s *Service) loadTable(ctx context.Context, in Input) (*queryTable, error) 
 	if d.Model != Table || encoding != NDJSON {
 		return nil, ErrUnsupported
 	}
-	table := &queryTable{input: in, schema: schema, definition: d}
-	err = s.rows(ctx, in.Artifact, m.Entries[0].Path, d, func(row Row) error { table.rows = append(table.rows, row); return nil })
-	return table, err
+	return &queryTable{input: in, schema: schema, definition: d, path: m.Entries[0].Path}, nil
 }
-func (s *Service) executeSQL(ctx context.Context, q QueryRequest) ([]ResultRow, error) {
+
+func (s *Service) loadRows(ctx context.Context, in Input, table *queryTable) error {
+	return s.rows(ctx, in.Artifact, table.path, table.definition, func(row Row) error {
+		table.rows = append(table.rows, row)
+		return nil
+	})
+}
+
+// sqlExecution is a parsed, bound and checked query, not yet run.
+type sqlExecution struct {
+	query      QueryRequest
+	plan       sqlPlan
+	tables     map[string]*queryTable
+	template   tuple
+	aggregated bool
+	planBytes  []byte
+}
+
+func (s *Service) prepareSQL(ctx context.Context, q QueryRequest) (*sqlExecution, error) {
 	plan, err := parseSQL(q.Text)
 	if err != nil {
 		return nil, err
 	}
 	tables := map[string]*queryTable{}
 	for _, in := range q.Inputs {
-		t, err := s.loadTable(ctx, in)
+		t, err := s.describeTable(ctx, in)
 		if err != nil {
 			return nil, err
 		}
 		tables[in.Alias] = t
 	}
-	base, ok := tables[plan.from.input]
-	if !ok {
+	if _, ok := tables[plan.from.input]; !ok {
 		return nil, fmt.Errorf("%w: FROM input", ErrQuery)
 	}
 	// Validate columns and parameters even for empty inputs; use placeholder rows.
@@ -443,6 +460,134 @@ func (s *Service) executeSQL(ctx context.Context, q QueryRequest) ([]ResultRow, 
 			return nil, err
 		}
 	}
+	aggregated := len(plan.groups) > 0
+	for _, p := range plan.selects {
+		aggregated = aggregated || hasAggregate(p.expression)
+	}
+	planBytes, _ := canon.Marshal(q)
+	return &sqlExecution{query: q, plan: plan, tables: tables, template: template, aggregated: aggregated, planBytes: planBytes}, nil
+}
+
+// sqlSource chooses the execution path. A single table without aggregation streams
+// with memory bounded by one row, so its evaluation errors and result limit surface
+// from Next. Joins and aggregates hold their inputs and report those from Query.
+func (s *Service) sqlSource(ctx context.Context, q QueryRequest) (rowSource, error) {
+	x, err := s.prepareSQL(ctx, q)
+	if err != nil {
+		return rowSource{}, err
+	}
+	if len(x.plan.joins) == 0 && !x.aggregated {
+		return s.streamSQL(ctx, x)
+	}
+	rows, err := s.executeSQL(ctx, x)
+	if err != nil {
+		return rowSource{}, err
+	}
+	return sliceSource(rows), nil
+}
+
+func (s *Service) streamSQL(ctx context.Context, x *sqlExecution) (rowSource, error) {
+	table := x.tables[x.plan.from.input]
+	reader, err := s.openRows(ctx, table.input.Artifact, table.path, table.definition)
+	if err != nil {
+		return rowSource{}, err
+	}
+	produced, dependencies := 0, 0
+	next := func() (ResultRow, error) {
+		for {
+			row, err := reader.Next()
+			if err != nil {
+				return ResultRow{}, err
+			}
+			candidate := tuple{rows: map[string]boundRow{x.plan.from.alias: {table, row}}}
+			test, err := evaluate(ctx, x.plan.where, candidate, nil, x.query.Parameters)
+			if err != nil {
+				return ResultRow{}, err
+			}
+			if test.value != true {
+				continue
+			}
+			candidate.predicates = role(test.deps, provenance.Predicate)
+			if produced++; produced > s.limits.MaxResultRows {
+				return ResultRow{}, ErrLimit
+			}
+			return s.buildResult(ctx, x, "", []tuple{candidate}, &dependencies)
+		}
+	}
+	return rowSource{next: next, close: reader.Close}, nil
+}
+
+// buildResult projects one group of tuples, charging the query's dependency budget
+// incrementally before identity work.
+func (s *Service) buildResult(ctx context.Context, x *sqlExecution, key string, members []tuple, totalDeps *int) (ResultRow, error) {
+	if err := ctx.Err(); err != nil {
+		return ResultRow{}, err
+	}
+	representative := x.template
+	if len(members) > 0 {
+		representative = members[0]
+	}
+	result := ResultRow{Values: map[string]any{}, Columns: map[string][]provenance.Dependency{}, Expressions: map[string]string{}}
+	var rowSet, predSet, depTotal depSet
+	for _, member := range members {
+		rowSet.add(rowDeps(member))
+		predSet.add(member.predicates)
+	}
+	rows, predicates := rowSet.sorted(), predSet.sorted()
+	if *totalDeps+rowSet.len()+predSet.len() > s.limits.MaxDependencies {
+		return ResultRow{}, ErrLimit
+	}
+	for _, p := range x.plan.selects {
+		v, err := evaluate(ctx, p.expression, representative, members, x.query.Parameters)
+		if err != nil {
+			return ResultRow{}, err
+		}
+		result.Values[p.alias] = v.value
+		result.Columns[p.alias] = union(v.deps, predicates)
+		result.Expressions[p.alias] = expressionText(p.expression)
+		depTotal.add(v.deps)
+		if *totalDeps+depTotal.len() > s.limits.MaxDependencies {
+			return ResultRow{}, ErrLimit
+		}
+	}
+	depTotal.add(rows, predicates)
+	result.Dependencies = depTotal.sorted()
+	identity := sha256.New()
+	identity.Write(x.planBytes)
+	if x.aggregated {
+		identity.Write([]byte(key))
+	}
+	for _, member := range members {
+		bindings := map[string]provenance.Ref{}
+		for alias, bound := range member.rows {
+			bindings[alias] = rowRef(bound)
+		}
+		encoded, err := canon.Marshal(bindings)
+		if err != nil {
+			return ResultRow{}, err
+		}
+		identity.Write(encoded)
+	}
+	result.ID = hex.EncodeToString(identity.Sum(nil))
+	*totalDeps += len(result.Dependencies)
+	for _, d := range result.Columns {
+		*totalDeps += len(d)
+	}
+	if *totalDeps > s.limits.MaxDependencies {
+		return ResultRow{}, ErrLimit
+	}
+	return result, nil
+}
+
+func (s *Service) executeSQL(ctx context.Context, x *sqlExecution) ([]ResultRow, error) {
+	plan, q := x.plan, x.query
+	for _, in := range q.Inputs {
+		if err := s.loadRows(ctx, in, x.tables[in.Alias]); err != nil {
+			return nil, err
+		}
+	}
+	base, tables := x.tables[plan.from.input], x.tables
+	var err error
 	tuples := make([]tuple, 0, len(base.rows))
 	for _, row := range base.rows {
 		tuples = append(tuples, tuple{rows: map[string]boundRow{plan.from.alias: {base, row}}})
@@ -495,13 +640,9 @@ func (s *Service) executeSQL(ctx context.Context, q QueryRequest) ([]ResultRow, 
 		}
 	}
 	tuples = filtered
-	aggregated := len(plan.groups) > 0
-	for _, p := range plan.selects {
-		aggregated = aggregated || hasAggregate(p.expression)
-	}
 	groups := map[string][]tuple{}
 	var order []string
-	if !aggregated {
+	if !x.aggregated {
 		for i, t := range tuples {
 			key := strconv.Itoa(i)
 			order = append(order, key)
@@ -539,67 +680,12 @@ func (s *Service) executeSQL(ctx context.Context, q QueryRequest) ([]ResultRow, 
 	if len(order) > s.limits.MaxResultRows {
 		return nil, ErrLimit
 	}
-	planBytes, _ := canon.Marshal(q)
 	totalDeps := 0
 	results := make([]ResultRow, 0, len(order))
 	for _, key := range order {
-		if err = ctx.Err(); err != nil {
+		result, err := s.buildResult(ctx, x, key, groups[key], &totalDeps)
+		if err != nil {
 			return nil, err
-		}
-		members := groups[key]
-		representative := template
-		if len(members) > 0 {
-			representative = members[0]
-		}
-		result := ResultRow{Values: map[string]any{}, Columns: map[string][]provenance.Dependency{}, Expressions: map[string]string{}}
-		var rowSet, predSet, depTotal depSet
-		for _, member := range members {
-			rowSet.add(rowDeps(member))
-			predSet.add(member.predicates)
-		}
-		rows, predicates := rowSet.sorted(), predSet.sorted()
-		// Enforce the dependency budget incrementally, before identity work.
-		if totalDeps+rowSet.len()+predSet.len() > s.limits.MaxDependencies {
-			return nil, ErrLimit
-		}
-		for _, p := range plan.selects {
-			v, err := evaluate(ctx, p.expression, representative, members, q.Parameters)
-			if err != nil {
-				return nil, err
-			}
-			result.Values[p.alias] = v.value
-			result.Columns[p.alias] = union(v.deps, predicates)
-			result.Expressions[p.alias] = expressionText(p.expression)
-			depTotal.add(v.deps)
-			if totalDeps+depTotal.len() > s.limits.MaxDependencies {
-				return nil, ErrLimit
-			}
-		}
-		depTotal.add(rows, predicates)
-		result.Dependencies = depTotal.sorted()
-		identity := sha256.New()
-		identity.Write(planBytes)
-		if aggregated {
-			identity.Write([]byte(key))
-		}
-		for _, member := range members {
-			bindings := map[string]provenance.Ref{}
-			for alias, bound := range member.rows {
-				bindings[alias] = rowRef(bound)
-			}
-			encoded, err := canon.Marshal(bindings)
-			if err != nil {
-				return nil, err
-			}
-			identity.Write(encoded)
-		}
-		result.ID = hex.EncodeToString(identity.Sum(nil))
-		totalDeps += len(result.Dependencies)
-		for _, d := range result.Columns {
-			totalDeps += len(d)
-		}
-		if totalDeps > s.limits.MaxDependencies {
-			return nil, ErrLimit
 		}
 		results = append(results, result)
 	}
@@ -713,11 +799,28 @@ func pointerToken(s string) (string, error) {
 	return b.String(), nil
 }
 
+// rowSource produces result rows on demand. A nil close means nothing to release.
+type rowSource struct {
+	next  func() (ResultRow, error)
+	close func() error
+}
+
+func sliceSource(rows []ResultRow) rowSource {
+	index := 0
+	return rowSource{next: func() (ResultRow, error) {
+		if index == len(rows) {
+			return ResultRow{}, io.EOF
+		}
+		row := rows[index]
+		index++
+		return row, nil
+	}}
+}
+
 type resultStream struct {
 	ctx         context.Context
 	span        *observability.Span
-	rows        []ResultRow
-	index       int
+	source      rowSource
 	returned    int64
 	closed, eof bool
 	err         error
@@ -735,13 +838,15 @@ func (s *Service) Query(ctx context.Context, request QueryRequest) (ResultStream
 		span.End(err)
 		return nil, err
 	}
-	var rows []ResultRow
+	var source rowSource
 	coverage := complete()
 	switch q.Language {
 	case SQL:
-		rows, err = s.executeSQL(ctx, q)
+		source, err = s.sqlSource(ctx, q)
 	case JSONPointer:
+		var rows []ResultRow
 		rows, err = s.executeJSON(ctx, q)
+		source = sliceSource(rows)
 		coverage = jsonCoverage()
 	default:
 		err = ErrUnsupported
@@ -750,7 +855,7 @@ func (s *Service) Query(ctx context.Context, request QueryRequest) (ResultStream
 		span.End(err)
 		return nil, err
 	}
-	return &resultStream{ctx: ctx, span: span, rows: rows, coverage: coverage}, nil
+	return &resultStream{ctx: ctx, span: span, source: source, coverage: coverage}, nil
 }
 func (r *resultStream) Next() (ResultRow, error) {
 	if r.closed {
@@ -764,15 +869,20 @@ func (r *resultStream) Next() (ResultRow, error) {
 		r.span.RecordError(err)
 		return ResultRow{}, err
 	}
-	if r.index == len(r.rows) {
-		if !r.eof {
-			r.eof = true
-			r.span.Count("result_eof", 1)
-		}
+	if r.eof {
 		return ResultRow{}, io.EOF
 	}
-	row := r.rows[r.index]
-	r.index++
+	row, err := r.source.next()
+	if err == io.EOF {
+		r.eof = true
+		r.span.Count("result_eof", 1)
+		return ResultRow{}, io.EOF
+	}
+	if err != nil {
+		r.err = err
+		r.span.RecordError(err)
+		return ResultRow{}, err
+	}
 	// Deep-copy without canonical re-validation: rows already passed query
 	// limits, and canon's stricter size/digit caps must not fail a stream
 	// whose Query succeeded. UseNumber preserves exact numeric text.
@@ -807,7 +917,11 @@ func (r *resultStream) Close() error {
 		return r.err
 	}
 	r.closed = true
-	r.rows = nil
+	if r.source.close != nil {
+		if err := r.source.close(); err != nil {
+			r.err = errors.Join(r.err, err)
+		}
+	}
 	if r.returned > 0 {
 		r.span.Count("rows_returned", r.returned)
 	}

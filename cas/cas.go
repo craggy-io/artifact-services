@@ -16,6 +16,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/craggy-io/artifact-services/internal/crashpoint"
 	"github.com/craggy-io/artifact-services/observability"
 	"github.com/craggy-io/artifact-services/storage"
 )
@@ -27,6 +28,9 @@ var (
 	ErrInvalidID = errors.New("cas: invalid content ID")
 	ErrIntegrity = errors.New("cas: content digest mismatch")
 	ErrLimit     = errors.New("cas: content exceeds configured maximum size")
+	// ErrCapability reports a backend lacking an optional capability. For seekable
+	// access the spool adapter is the fallback.
+	ErrCapability = errors.New("cas: backend does not offer this capability")
 )
 
 // ParseID validates the supported algorithm and canonical digest spelling.
@@ -219,9 +223,11 @@ func (s *Service) put(ctx context.Context, source io.Reader, removeTemp func(str
 		return result, err
 	}
 	key, _ := storageKey(result.ID)
+	crashpoint.Hit(crashpoint.CASSpooled)
 	err = s.blobs.Put(ctx, key, spool)
 	if err == nil {
 		committed = true
+		crashpoint.Hit(crashpoint.CASPublished)
 		return result, nil
 	}
 	var outcome *storage.PutError
@@ -335,4 +341,81 @@ func (s *Service) Exists(ctx context.Context, id ID) (exists bool, resultErr err
 		return false, err
 	}
 	return s.blobs.Exists(ctx, key)
+}
+
+// Statter is an optional capability; Service offers it when its backend does.
+type Statter interface {
+	Stat(context.Context, ID) (int64, error)
+}
+
+// SeekableFile is content whose whole digest was verified before it was returned.
+type SeekableFile = storage.File
+
+// Seeker is an optional capability; Service offers it when its backend does.
+type Seeker interface {
+	OpenSeekable(context.Context, ID) (SeekableFile, error)
+}
+
+var (
+	_ Statter = (*Service)(nil)
+	_ Seeker  = (*Service)(nil)
+)
+
+// Stat returns the stored size without reading content. It checks presence, not
+// integrity. ErrCapability reports a backend with no metadata capability.
+func (s *Service) Stat(ctx context.Context, id ID) (size int64, resultErr error) {
+	ctx, span := start(ctx, "stat", string(id))
+	defer func() { span.End(resultErr) }()
+	if err := s.requireBackend(); err != nil {
+		return 0, err
+	}
+	key, err := storageKey(id)
+	if err != nil {
+		return 0, err
+	}
+	backend, ok := s.blobs.(storage.Stater)
+	if !ok {
+		return 0, ErrCapability
+	}
+	info, err := backend.Stat(ctx, key)
+	return info.Size, err
+}
+
+// OpenSeekable hashes the whole file through one handle and returns that same
+// handle rewound, so what was verified cannot be swapped for another file by
+// path. It costs a full read per open and no copy. A mismatch fails the open
+// with ErrIntegrity and no bytes are ever served. Once returned, Read, Seek and
+// ReadAt are plain file operations: they do not re-verify, so corruption of the
+// stored file after the open is not detected on that handle. Reopen to recheck.
+func (s *Service) OpenSeekable(ctx context.Context, id ID) (file SeekableFile, resultErr error) {
+	ctx, span := start(ctx, "open_seekable", string(id))
+	defer func() { span.End(resultErr) }()
+	if err := s.requireBackend(); err != nil {
+		return nil, err
+	}
+	key, err := storageKey(id)
+	if err != nil {
+		return nil, err
+	}
+	backend, ok := s.blobs.(storage.Seekable)
+	if !ok {
+		return nil, ErrCapability
+	}
+	opened, err := backend.OpenSeekable(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	digest := sha256.New()
+	_, err = io.Copy(digest, &countedReader{ctx: ctx, source: opened, span: span})
+	if err == nil && hex.EncodeToString(digest.Sum(nil)) != key {
+		err = ErrIntegrity
+	}
+	if err == nil {
+		_, err = opened.Seek(0, io.SeekStart)
+	}
+	if err != nil {
+		return nil, errors.Join(err, opened.Close())
+	}
+	span.Count("verified", 1)
+	return opened, nil
 }

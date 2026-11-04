@@ -50,13 +50,25 @@ func TestReviewRatValuePrecisionScopes(t *testing.T) {
 		t.Fatalf("rows = %+v", rows)
 	}
 	q.Text = "SELECT t.v / 3 AS v FROM t"
-	if _, err := f.s.Query(f.ctx, q); err == nil {
+	if err := firstRowError(f.ctx, f.s, q); err == nil {
 		t.Fatal("nonterminating division accepted")
 	}
 	q.Text = "SELECT t.v / 10 AS v FROM t"
-	if _, err := f.s.Query(f.ctx, q); !errors.Is(err, ErrLimit) {
+	if err := firstRowError(f.ctx, f.s, q); !errors.Is(err, ErrLimit) {
 		t.Fatalf("41-place division = %v, want ErrLimit", err)
 	}
+}
+
+// firstRowError returns a query's failure wherever it surfaces: single-table queries
+// stream, so evaluation errors arrive from Next rather than from Query.
+func firstRowError(ctx context.Context, s *Service, q QueryRequest) error {
+	stream, err := s.Query(ctx, q)
+	if err != nil {
+		return err
+	}
+	defer stream.Close()
+	_, err = stream.Next()
+	return err
 }
 
 func TestReviewGroupedQualifiedSpellingAndAliasCase(t *testing.T) {

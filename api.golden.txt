@@ -1,0 +1,977 @@
+adapters/gc func (f Finding) String() string
+adapters/gc func (v Verification) OK() bool
+adapters/gc func Scan(ctx context.Context, blobs storage.Reclaimer, store *artifacts.Service) (Report, error)
+adapters/gc func Sweep(ctx context.Context, blobs storage.Reclaimer, store *artifacts.Service, options SweepOptions) (SweepResult, error)
+adapters/gc func Verify(ctx context.Context, s Services) (Verification, error)
+adapters/gc type Finding field ID string
+adapters/gc type Finding field Layer string
+adapters/gc type Finding field Problem string
+adapters/gc type Finding struct
+adapters/gc type Orphan field Content cas.ID
+adapters/gc type Orphan field ModTime time.Time
+adapters/gc type Orphan field Size int64
+adapters/gc type Orphan struct
+adapters/gc type Report field Missing []cas.ID
+adapters/gc type Report field OrphanBytes int64
+adapters/gc type Report field Orphans []Orphan
+adapters/gc type Report field Reachable int64
+adapters/gc type Report field Stored int64
+adapters/gc type Report field StoredBytes int64
+adapters/gc type Report struct
+adapters/gc type Services field Artifacts *artifacts.Service
+adapters/gc type Services field Assertions *assertions.Service
+adapters/gc type Services field Blobs storage.Reclaimer
+adapters/gc type Services field CAS cas.Store
+adapters/gc type Services field Lineage *lineage.Service
+adapters/gc type Services struct
+adapters/gc type SweepOptions field DryRun bool
+adapters/gc type SweepOptions field Horizon time.Duration
+adapters/gc type SweepOptions struct
+adapters/gc type SweepResult field Pending int
+adapters/gc type SweepResult field Removed []cas.ID
+adapters/gc type SweepResult field RemovedBytes int64
+adapters/gc type SweepResult field Report
+adapters/gc type SweepResult field Spared int64
+adapters/gc type SweepResult struct
+adapters/gc type Verification field BytesChecked int64
+adapters/gc type Verification field ContentChecked int64
+adapters/gc type Verification field Findings []Finding
+adapters/gc type Verification field RecordsChecked int64
+adapters/gc type Verification struct
+adapters/gc var ErrHorizon
+adapters/runs const KindDerivedFrom
+adapters/runs const KindRunEnd
+adapters/runs const KindRunStart
+adapters/runs const KindSessionEnd
+adapters/runs const KindSessionStart
+adapters/runs const OutcomeFailed
+adapters/runs const OutcomeSucceeded
+adapters/runs func (c *Coordinator) Begin(ctx context.Context, request SessionRequest) (*Session, error)
+adapters/runs func (c *Coordinator) DerivationKey(ctx context.Context, job Job) (string, error)
+adapters/runs func (c *Coordinator) Unfinished(ctx context.Context) ([]Unfinished, error)
+adapters/runs func (e *RunError) Error() string
+adapters/runs func (e *RunError) Unwrap() error
+adapters/runs func (r *Run) Assertions(ctx context.Context, q assertions.Query) (assertions.Page, error)
+adapters/runs func (r *Run) Blob(ctx context.Context, name string, content io.Reader, mode uint32) error
+adapters/runs func (r *Run) Content(ctx context.Context, content io.Reader) (cas.PutResult, error)
+adapters/runs func (r *Run) Existing(name string, id artifacts.ID) error
+adapters/runs func (r *Run) Head(ctx context.Context, history string) (lineage.ID, error)
+adapters/runs func (r *Run) ID() string
+adapters/runs func (r *Run) Keep(name string) error
+adapters/runs func (r *Run) Open(ctx context.Context, artifact artifacts.ID, path string) (io.ReadCloser, error)
+adapters/runs func (r *Run) Pins() Pins
+adapters/runs func (r *Run) PlanAssertion(output string, request assertions.Request) error
+adapters/runs func (r *Run) Tree(name string) (*TreeStage, error)
+adapters/runs func (r Result) Output(name string) (Output, bool)
+adapters/runs func (s *Session) Actor() string
+adapters/runs func (s *Session) Child(ctx context.Context, request SessionRequest) (*Session, error)
+adapters/runs func (s *Session) End(ctx context.Context, cause error) error
+adapters/runs func (s *Session) ID() string
+adapters/runs func (s *Session) Owner() string
+adapters/runs func (s *Session) Run(ctx context.Context, job Job, fn func(context.Context, *Run) error) (Result, error)
+adapters/runs func (t *TreeStage) Add(e artifacts.Entry) error
+adapters/runs func New(options Options) (*Coordinator, error)
+adapters/runs type Code field Artifact artifacts.ID
+adapters/runs type Code field Kind string
+adapters/runs type Code field Name string
+adapters/runs type Code field Version string
+adapters/runs type Code struct
+adapters/runs type Coordinator struct
+adapters/runs type Job field Code Code
+adapters/runs type Job field Deterministic bool
+adapters/runs type Job field ID string
+adapters/runs type Job field Inputs []provenance.Ref
+adapters/runs type Job field Params json.RawMessage
+adapters/runs type Job field Strict bool
+adapters/runs type Job field Writer assertions.Writer
+adapters/runs type Job struct
+adapters/runs type Options field Artifacts *artifacts.Service
+adapters/runs type Options field Assertions *assertions.Service
+adapters/runs type Options field CAS cas.Store
+adapters/runs type Options field Lineage *lineage.Service
+adapters/runs type Options struct
+adapters/runs type Output field Artifact artifacts.ID
+adapters/runs type Output field Name string
+adapters/runs type Output field Occurrence artifacts.OccurrenceID
+adapters/runs type Output struct
+adapters/runs type Pins field Artifacts uint64
+adapters/runs type Pins field Assertions uint64
+adapters/runs type Pins field Lineage uint64
+adapters/runs type Pins struct
+adapters/runs type Result field Completion lineage.ID
+adapters/runs type Result field Outputs []Output
+adapters/runs type Result field Reused bool
+adapters/runs type Result field Run string
+adapters/runs type Result struct
+adapters/runs type Run struct
+adapters/runs type RunError field Err error
+adapters/runs type RunError field Outputs []Output
+adapters/runs type RunError field Run string
+adapters/runs type RunError struct
+adapters/runs type Session struct
+adapters/runs type SessionRequest field Actor string
+adapters/runs type SessionRequest field ID string
+adapters/runs type SessionRequest field Label string
+adapters/runs type SessionRequest field Owner string
+adapters/runs type SessionRequest struct
+adapters/runs type TreeStage struct
+adapters/runs type Unfinished field Actor string
+adapters/runs type Unfinished field ID string
+adapters/runs type Unfinished field Run bool
+adapters/runs type Unfinished struct
+adapters/runs var ErrInvalid
+adapters/runs var ErrPriorFailure
+adapters/runs var ErrUndeclaredRead
+adapters/spool func (f *File) Close() error
+adapters/spool func Copy(ctx context.Context, source io.ReadCloser, dir string) (file *File, result error)
+adapters/spool func OpenFile(ctx context.Context, store *artifacts.Service, id artifacts.ID, path, dir string) (cas.SeekableFile, error)
+adapters/spool type File field *os.File
+adapters/spool type File struct
+adapters/stack func (s *Stack) Close() error
+adapters/stack func Open(o Options) (*Stack, error)
+adapters/stack type Options field ArtifactMetadata []string
+adapters/stack type Options field Authority *assertions.Authority
+adapters/stack type Options field LineageMetadata []string
+adapters/stack type Options field MaxArtifactEntries int64
+adapters/stack type Options field MaxBytes int64
+adapters/stack type Options field MaxRecords int
+adapters/stack type Options field Objects objects.Options
+adapters/stack type Options field Relaxed bool
+adapters/stack type Options field ReservedNamespaces map[string][]string
+adapters/stack type Options field Root string
+adapters/stack type Options struct
+adapters/stack type Stack field Artifacts *artifacts.Service
+adapters/stack type Stack field Assertions *assertions.Service
+adapters/stack type Stack field Blobs *storage.Filesystem
+adapters/stack type Stack field CAS *cas.Service
+adapters/stack type Stack field Lineage *lineage.Service
+adapters/stack type Stack field Objects *objects.Service
+adapters/stack type Stack field Root string
+adapters/stack type Stack struct
+adapters/testkit func (s *Stack) File(path, data string) artifacts.ID
+adapters/testkit func (s *Stack) Put(data string) (cas.ID, int64)
+adapters/testkit func (s *Stack) Reopen()
+adapters/testkit func (s *Stack) Runs() *runs.Coordinator
+adapters/testkit func (s *Stack) Session(actor string) *runs.Session
+adapters/testkit func IDs(prefix string) func() string
+adapters/testkit func Open(t testing.TB, options ...Options) *Stack
+adapters/testkit type Options = stack.Options
+adapters/testkit type Stack field *stack.Stack
+adapters/testkit type Stack field Ctx context.Context
+adapters/testkit type Stack field Options stack.Options
+adapters/testkit type Stack field T testing.TB
+adapters/testkit type Stack struct
+adapters/treeio const SymlinkFollowInside
+adapters/treeio const SymlinkReject
+adapters/treeio const SymlinkSkip
+adapters/treeio func Ingest(ctx context.Context, services Services, root string, options Options) (Ingested, error)
+adapters/treeio func IngestReader(ctx context.Context, services Services, name string, content io.Reader, mode uint32, source provenance.Ref, options Options) (Ingested, error)
+adapters/treeio func Materialize(ctx context.Context, store *artifacts.Service, id artifacts.ID, dest string, options MaterializeOptions) (out Materialized, result error)
+adapters/treeio type Ingested field Artifact artifacts.ID
+adapters/treeio type Ingested field Bytes int64
+adapters/treeio type Ingested field Dirs int64
+adapters/treeio type Ingested field Files int64
+adapters/treeio type Ingested field Occurrence artifacts.OccurrenceID
+adapters/treeio type Ingested field Source provenance.Ref
+adapters/treeio type Ingested struct
+adapters/treeio type MaterializeOptions field Overwrite bool
+adapters/treeio type MaterializeOptions struct
+adapters/treeio type Materialized field Bytes int64
+adapters/treeio type Materialized field Dirs int64
+adapters/treeio type Materialized field Files int64
+adapters/treeio type Materialized struct
+adapters/treeio type Options field Exclude func(path string, d fs.DirEntry) bool
+adapters/treeio type Options field MaxMemory int
+adapters/treeio type Options field Metadata artifacts.Manifest
+adapters/treeio type Options field Mode func(path string, info fs.FileInfo) uint32
+adapters/treeio type Options field Name string
+adapters/treeio type Options field Occurrence artifacts.OccurrenceID
+adapters/treeio type Options field Source *provenance.Ref
+adapters/treeio type Options field Symlinks SymlinkPolicy
+adapters/treeio type Options field TempDir string
+adapters/treeio type Options struct
+adapters/treeio type Services field Artifacts *artifacts.Service
+adapters/treeio type Services field CAS cas.Store
+adapters/treeio type Services field Lineage *lineage.Service
+adapters/treeio type Services struct
+adapters/treeio type SymlinkPolicy int
+adapters/treeio var ErrEscape
+adapters/treeio var ErrSymlink
+adapters/typed func (k Kind[T]) About(ctx context.Context, subject provenance.Ref) iter.Seq2[Said[T], error]
+adapters/typed func (k Kind[T]) Citing(ctx context.Context, cited provenance.Ref) iter.Seq2[Said[T], error]
+adapters/typed func (k Kind[T]) Claim(ctx context.Context, subject provenance.Ref, value T, options ...Option) (assertions.ID, error)
+adapters/typed func (k Kind[T]) Current(ctx context.Context) iter.Seq2[Said[T], error]
+adapters/typed func (k Kind[T]) Get(ctx context.Context, id assertions.ID) (Said[T], error)
+adapters/typed func (k Kind[T]) ID() assertions.KindID
+adapters/typed func (k Kind[T]) Keyed(ctx context.Context, key string) (Said[T], error)
+adapters/typed func (t Table[T]) Put(ctx context.Context, rows iter.Seq2[T, error], metadata map[string]json.RawMessage) (id artifacts.ID, result error)
+adapters/typed func (t Table[T]) RowID(key ...any) (string, error)
+adapters/typed func (t Table[T]) Schema() artifacts.ID
+adapters/typed func DefineKind[T any](ctx context.Context, service *assertions.Service, definition KindDefinition) (Kind[T], error)
+adapters/typed func DefineTable[T any](ctx context.Context, services Services, key ...string) (Table[T], error)
+adapters/typed func Replacing(id assertions.ID) Option
+adapters/typed func Rows[T any](ctx context.Context, service *objects.Service, id artifacts.ID) iter.Seq2[T, error]
+adapters/typed func ShapeOf[T any]() (objects.Shape, error)
+adapters/typed func Slice[T any](rows []T) iter.Seq2[T, error]
+adapters/typed func WithActivity(activity string) Option
+adapters/typed func WithActor(actor string) Option
+adapters/typed func WithEvidence(refs ...provenance.Ref) Option
+adapters/typed func WithID(id assertions.ID) Option
+adapters/typed func WithKey(key string) Option
+adapters/typed func WithWriter(writer assertions.Writer) Option
+adapters/typed type KindDefinition field Keyed bool
+adapters/typed type KindDefinition field Name string
+adapters/typed type KindDefinition field Register assertions.Writer
+adapters/typed type KindDefinition field Shape *objects.Shape
+adapters/typed type KindDefinition field Version int
+adapters/typed type KindDefinition field Writers []string
+adapters/typed type KindDefinition struct
+adapters/typed type Kind[T any] struct
+adapters/typed type Option func(*assertions.Request)
+adapters/typed type Said[T any] field Claim T
+adapters/typed type Said[T any] field assertions.Assertion
+adapters/typed type Said[T any] struct
+adapters/typed type Services field Artifacts *artifacts.Service
+adapters/typed type Services field CAS cas.Store
+adapters/typed type Services field Objects *objects.Service
+adapters/typed type Services struct
+adapters/typed type Table[T any] field TempDir string
+adapters/typed type Table[T any] struct
+adapters/typed var ErrUnsupportedType
+artifacts const ChangeArtifact
+artifacts const ChangeOccurrence
+artifacts const KindDir
+artifacts const KindLink
+artifacts const ManifestVersion
+artifacts func (b *Builder) Add(e Entry) error
+artifacts func (b *Builder) Close() error
+artifacts func (b *Builder) Count() int64
+artifacts func (b *Builder) Publish(ctx context.Context) (ID, error)
+artifacts func (e *OccurrenceError) Error() string
+artifacts func (e *OccurrenceError) Unwrap() error
+artifacts func (e *PublishError) Error() string
+artifacts func (e *PublishError) Unwrap() error
+artifacts func (e Entry) IsFile() bool
+artifacts func (s *Service) Category(ctx context.Context, id ID) (category observability.Category, resultErr error)
+artifacts func (s *Service) Changes(ctx context.Context, q provenance.ChangeQuery) (page provenance.ChangePage, result error)
+artifacts func (s *Service) Close() error
+artifacts func (s *Service) Fence(ctx context.Context, fn func(context.Context) error) error
+artifacts func (s *Service) Get(ctx context.Context, id ID) (manifest Manifest, resultErr error)
+artifacts func (s *Service) GetOccurrence(ctx context.Context, id OccurrenceID) (occurrence Occurrence, result error)
+artifacts func (s *Service) ListFiles(ctx context.Context, id ID, query FileQuery) (page FilePage, resultErr error)
+artifacts func (s *Service) NewBuilder(options BuilderOptions) *Builder
+artifacts func (s *Service) Occurrences(ctx context.Context, q OccurrenceQuery) (page OccurrencePage, result error)
+artifacts func (s *Service) OnCommit(hook func(sequence uint64)) (stop func())
+artifacts func (s *Service) OpenFile(ctx context.Context, id ID, path string) (reader io.ReadCloser, resultErr error)
+artifacts func (s *Service) OpenSeekable(ctx context.Context, id ID, path string) (file cas.SeekableFile, resultErr error)
+artifacts func (s *Service) Publish(ctx context.Context, manifest Manifest) (ID, error)
+artifacts func (s *Service) PublishValidated(ctx context.Context, manifest Manifest, claim typedclaim.Claim) (ID, error)
+artifacts func (s *Service) Reachable(ctx context.Context, visit func(cas.ID) error) (result error)
+artifacts func (s *Service) Rebuild(ctx context.Context) (resultErr error)
+artifacts func (s *Service) RecordOccurrence(ctx context.Context, request OccurrenceRequest) (occurrence Occurrence, result error)
+artifacts func (s *Service) Search(ctx context.Context, query CatalogQuery) (page CatalogPage, resultErr error)
+artifacts func (s *Service) Sequence(ctx context.Context) (uint64, error)
+artifacts func (s *Service) Stat(ctx context.Context, id ID, path string) (info FileInfo, resultErr error)
+artifacts func (s *Service) StatContent(ctx context.Context, id cas.ID) (size int64, result error)
+artifacts func (s *Service) ValidatedClaim(ctx context.Context, id ID) (typedclaim.Claim, error)
+artifacts func New(blobs cas.Store, options Options) (*Service, error)
+artifacts func ParseID(value string) (ID, error)
+artifacts type Builder struct
+artifacts type BuilderOptions field MaxMemory int
+artifacts type BuilderOptions field Metadata map[string]json.RawMessage
+artifacts type BuilderOptions field TempDir string
+artifacts type BuilderOptions field VerifyContent bool
+artifacts type BuilderOptions struct
+artifacts type CatalogItem field Category observability.Category
+artifacts type CatalogItem field Content cas.ID
+artifacts type CatalogItem field FileCount int64
+artifacts type CatalogItem field ID ID
+artifacts type CatalogItem field LogicalBytes int64
+artifacts type CatalogItem field SchemaID ID
+artifacts type CatalogItem field Sequence uint64
+artifacts type CatalogItem struct
+artifacts type CatalogPage field Items []CatalogItem
+artifacts type CatalogPage field NextCursor string
+artifacts type CatalogPage struct
+artifacts type CatalogQuery field Content cas.ID
+artifacts type CatalogQuery field Cursor string
+artifacts type CatalogQuery field ID ID
+artifacts type CatalogQuery field IncludeInternal bool
+artifacts type CatalogQuery field Limit int
+artifacts type CatalogQuery field MaxBytes *int64
+artifacts type CatalogQuery field MaxFiles *int64
+artifacts type CatalogQuery field Metadata map[string]json.RawMessage
+artifacts type CatalogQuery field MinBytes *int64
+artifacts type CatalogQuery field MinFiles *int64
+artifacts type CatalogQuery field SchemaID ID
+artifacts type CatalogQuery struct
+artifacts type Entry field Content cas.ID
+artifacts type Entry field Kind EntryKind
+artifacts type Entry field Mode uint32
+artifacts type Entry field Path string
+artifacts type Entry field Size int64
+artifacts type Entry field Target ID
+artifacts type Entry field TargetPath string
+artifacts type Entry struct
+artifacts type EntryKind string
+artifacts type FileInfo field Content cas.ID
+artifacts type FileInfo field Kind EntryKind
+artifacts type FileInfo field Mode uint32
+artifacts type FileInfo field Path string
+artifacts type FileInfo field Size int64
+artifacts type FileInfo struct
+artifacts type FilePage field Entries []Entry
+artifacts type FilePage field NextCursor string
+artifacts type FilePage struct
+artifacts type FileQuery field Cursor string
+artifacts type FileQuery field Expand bool
+artifacts type FileQuery field Limit int
+artifacts type FileQuery field Prefix string
+artifacts type FileQuery struct
+artifacts type ID string
+artifacts type LeaseError = journal.LeaseError
+artifacts type Manifest field Entries []Entry
+artifacts type Manifest field Metadata map[string]json.RawMessage
+artifacts type Manifest field Version int
+artifacts type Manifest struct
+artifacts type Occurrence field Artifact ID
+artifacts type Occurrence field Category observability.Category
+artifacts type Occurrence field Content cas.ID
+artifacts type Occurrence field ID OccurrenceID
+artifacts type Occurrence field Metadata map[string]json.RawMessage
+artifacts type Occurrence field Name string
+artifacts type Occurrence field Origin string
+artifacts type Occurrence field Producer string
+artifacts type Occurrence field Sequence uint64
+artifacts type Occurrence struct
+artifacts type OccurrenceError field Committed bool
+artifacts type OccurrenceError field Err error
+artifacts type OccurrenceError field ID OccurrenceID
+artifacts type OccurrenceError struct
+artifacts type OccurrenceID string
+artifacts type OccurrencePage field NextCursor string
+artifacts type OccurrencePage field Occurrences []Occurrence
+artifacts type OccurrencePage struct
+artifacts type OccurrenceQuery field Artifact ID
+artifacts type OccurrenceQuery field Content cas.ID
+artifacts type OccurrenceQuery field Cursor string
+artifacts type OccurrenceQuery field IncludeInternal bool
+artifacts type OccurrenceQuery field Limit int
+artifacts type OccurrenceQuery field Metadata map[string]json.RawMessage
+artifacts type OccurrenceQuery field Name string
+artifacts type OccurrenceQuery struct
+artifacts type OccurrenceRequest field Artifact ID
+artifacts type OccurrenceRequest field ID OccurrenceID
+artifacts type OccurrenceRequest field Metadata map[string]json.RawMessage
+artifacts type OccurrenceRequest field Name string
+artifacts type OccurrenceRequest field Origin string
+artifacts type OccurrenceRequest field Producer string
+artifacts type OccurrenceRequest struct
+artifacts type Options field IndexedMetadata []string
+artifacts type Options field MaxBytes int64
+artifacts type Options field MaxEntries int64
+artifacts type Options field MaxLinkDepth int
+artifacts type Options field MaxManifestBytes int64
+artifacts type Options field MaxMaterializedEntries int
+artifacts type Options field MaxRecords int
+artifacts type Options field Relaxed bool
+artifacts type Options field Root string
+artifacts type Options field TempDir string
+artifacts type Options struct
+artifacts type PublishError field Err error
+artifacts type PublishError field ID ID
+artifacts type PublishError field ManifestCommitted bool
+artifacts type PublishError field Registered bool
+artifacts type PublishError struct
+artifacts type Service struct
+artifacts type Store interface
+artifacts type Store method Category(context.Context, ID) (observability.Category, error)
+artifacts type Store method Get(context.Context, ID) (Manifest, error)
+artifacts type Store method GetOccurrence(context.Context, OccurrenceID) (Occurrence, error)
+artifacts type Store method ListFiles(context.Context, ID, FileQuery) (FilePage, error)
+artifacts type Store method Occurrences(context.Context, OccurrenceQuery) (OccurrencePage, error)
+artifacts type Store method OpenFile(context.Context, ID, string) (io.ReadCloser, error)
+artifacts type Store method Publish(context.Context, Manifest) (ID, error)
+artifacts type Store method RecordOccurrence(context.Context, OccurrenceRequest) (Occurrence, error)
+artifacts type Store method Search(context.Context, CatalogQuery) (CatalogPage, error)
+artifacts type Store method Stat(context.Context, ID, string) (FileInfo, error)
+artifacts type Store method StatContent(context.Context, cas.ID) (int64, error)
+artifacts var ErrClosed
+artifacts var ErrConflict
+artifacts var ErrCursor
+artifacts var ErrInvalidManifest
+artifacts var ErrInvalidQuery
+artifacts var ErrLeaseHeld
+artifacts var ErrLimit
+artifacts var ErrNotFile
+artifacts var ErrNotFound
+artifacts var ErrUnvalidated
+assertions const ChangeAssertion
+assertions const ChangeKind
+assertions const ChangeRetraction
+assertions func (a *Authority) Credential(identity string) Writer
+assertions func (e *RecordError) Error() string
+assertions func (e *RecordError) Unwrap() error
+assertions func (k Kind) ID() KindID
+assertions func (s *Service) Changes(ctx context.Context, q provenance.ChangeQuery) (page provenance.ChangePage, result error)
+assertions func (s *Service) Close() error
+assertions func (s *Service) Current(ctx context.Context, kind KindID, key string) (a Assertion, result error)
+assertions func (s *Service) Get(ctx context.Context, id ID) (a Assertion, result error)
+assertions func (s *Service) GetKind(ctx context.Context, id KindID) (Kind, error)
+assertions func (s *Service) History(ctx context.Context, id ID) (chain []Assertion, result error)
+assertions func (s *Service) List(ctx context.Context, q Query) (page Page, result error)
+assertions func (s *Service) OnCommit(hook func(sequence uint64)) (stop func())
+assertions func (s *Service) Record(ctx context.Context, request Request) (id ID, result error)
+assertions func (s *Service) Register(ctx context.Context, kind Kind, writer Writer) (id KindID, result error)
+assertions func (s *Service) Retract(ctx context.Context, r Retraction) (result error)
+assertions func (s *Service) Sequence(ctx context.Context) (uint64, error)
+assertions func (s *Service) ValidateAssertion(ctx context.Context, id string) error
+assertions func New(store artifacts.Store, options Options) (*Service, error)
+assertions func NewAuthority() *Authority
+assertions type Assertion field Activity string
+assertions type Assertion field Actor string
+assertions type Assertion field Category observability.Category
+assertions type Assertion field Current bool
+assertions type Assertion field EndedAt uint64
+assertions type Assertion field EndedBy ID
+assertions type Assertion field Evidence []provenance.Ref
+assertions type Assertion field ID ID
+assertions type Assertion field Key string
+assertions type Assertion field Kind KindID
+assertions type Assertion field Replaces ID
+assertions type Assertion field Retracted bool
+assertions type Assertion field Sequence uint64
+assertions type Assertion field Subject provenance.Ref
+assertions type Assertion field Value json.RawMessage
+assertions type Assertion field Writer string
+assertions type Assertion struct
+assertions type Authority struct
+assertions type ID string
+assertions type Kind field Keyed bool
+assertions type Kind field Name string
+assertions type Kind field Shape objects.Shape
+assertions type Kind field Version int
+assertions type Kind field Writers []string
+assertions type Kind struct
+assertions type KindID string
+assertions type LeaseError = journal.LeaseError
+assertions type Options field Authority *Authority
+assertions type Options field MaxBytes int64
+assertions type Options field MaxRecords int
+assertions type Options field Relaxed bool
+assertions type Options field ReservedNamespaces map[string][]string
+assertions type Options field Root string
+assertions type Options field ValidateActivity func(ctx context.Context, activity string) error
+assertions type Options field ValidateRevision func(ctx context.Context, revision, artifact string) error
+assertions type Options field ValidateSelector func(ctx context.Context, ref provenance.Ref) error
+assertions type Options struct
+assertions type Page field Assertions []Assertion
+assertions type Page field NextCursor string
+assertions type Page struct
+assertions type Query field AsOf uint64
+assertions type Query field Cursor string
+assertions type Query field Evidence *provenance.Ref
+assertions type Query field IncludeContent bool
+assertions type Query field IncludeEnded bool
+assertions type Query field IncludeInternal bool
+assertions type Query field Key string
+assertions type Query field Kind KindID
+assertions type Query field Limit int
+assertions type Query field Subject *provenance.Ref
+assertions type Query struct
+assertions type RecordError field Committed bool
+assertions type RecordError field Err error
+assertions type RecordError field ID ID
+assertions type RecordError struct
+assertions type Request field Activity string
+assertions type Request field Actor string
+assertions type Request field Evidence []provenance.Ref
+assertions type Request field ID ID
+assertions type Request field Key string
+assertions type Request field Kind KindID
+assertions type Request field Replaces ID
+assertions type Request field Subject provenance.Ref
+assertions type Request field Value json.RawMessage
+assertions type Request field Writer Writer
+assertions type Request struct
+assertions type Retraction field Activity string
+assertions type Retraction field Actor string
+assertions type Retraction field Assertion ID
+assertions type Retraction field Writer Writer
+assertions type Retraction struct
+assertions type Service struct
+assertions type Writer struct
+assertions var ErrClosed
+assertions var ErrConflict
+assertions var ErrCursor
+assertions var ErrInvalid
+assertions var ErrLeaseHeld
+assertions var ErrLimit
+assertions var ErrNamespace
+assertions var ErrNotFound
+assertions var ErrWriterForbidden
+cas func (e *PutError) Error() string
+cas func (e *PutError) Unwrap() error
+cas func (s *Service) Exists(ctx context.Context, id ID) (exists bool, resultErr error)
+cas func (s *Service) Open(ctx context.Context, id ID) (reader io.ReadCloser, resultErr error)
+cas func (s *Service) OpenSeekable(ctx context.Context, id ID) (file SeekableFile, resultErr error)
+cas func (s *Service) Put(ctx context.Context, source io.Reader) (PutResult, error)
+cas func (s *Service) Stat(ctx context.Context, id ID) (size int64, resultErr error)
+cas func New(blobs storage.Store, options Options) (*Service, error)
+cas func ParseID(value string) (ID, error)
+cas type ID string
+cas type Options field MaxBytes int64
+cas type Options field TempDir string
+cas type Options struct
+cas type PutError field Committed bool
+cas type PutError field Err error
+cas type PutError struct
+cas type PutResult field ID ID
+cas type PutResult field Reused bool
+cas type PutResult field Size int64
+cas type PutResult struct
+cas type SeekableFile = storage.File
+cas type Seeker interface
+cas type Seeker method OpenSeekable(context.Context, ID) (SeekableFile, error)
+cas type Service struct
+cas type Statter interface
+cas type Statter method Stat(context.Context, ID) (int64, error)
+cas type Store interface
+cas type Store method Exists(context.Context, ID) (bool, error)
+cas type Store method Open(context.Context, ID) (io.ReadCloser, error)
+cas type Store method Put(context.Context, io.Reader) (PutResult, error)
+cas var ErrCapability
+cas var ErrIntegrity
+cas var ErrInvalidID
+cas var ErrLimit
+lineage func (e *HeadConflictError) Error() string
+lineage func (e *HeadConflictError) Is(target error) bool
+lineage func (e *RecordError) Error() string
+lineage func (e *RecordError) Unwrap() error
+lineage func (s *Service) Append(ctx context.Context, a AppendRevision) (ID, error)
+lineage func (s *Service) Changes(ctx context.Context, q provenance.ChangeQuery) (page provenance.ChangePage, result error)
+lineage func (s *Service) Close() error
+lineage func (s *Service) Get(ctx context.Context, id ID) (r Record, result error)
+lineage func (s *Service) Head(ctx context.Context, history string) (id ID, result error)
+lineage func (s *Service) HeadAt(ctx context.Context, history string, sequence uint64) (ID, error)
+lineage func (s *Service) List(ctx context.Context, q Query) (page Page, result error)
+lineage func (s *Service) OnCommit(hook func(sequence uint64)) (stop func())
+lineage func (s *Service) Record(ctx context.Context, r Record) (id ID, result error)
+lineage func (s *Service) Sequence(ctx context.Context) (uint64, error)
+lineage func (s *Service) Traverse(ctx context.Context, q TraversalQuery) (page TraversalPage, result error)
+lineage func (s *Service) ValidateActivity(_ context.Context, id string) error
+lineage func (s *Service) ValidateRevision(_ context.Context, revision, artifact string) error
+lineage func New(store artifacts.Store, options Options) (*Service, error)
+lineage type Activity field Actor string
+lineage type Activity field Evidence []Evidence
+lineage type Activity field ExternalSource string
+lineage type Activity field Inputs []provenance.Ref
+lineage type Activity field Kind string
+lineage type Activity field Metadata map[string]json.RawMessage
+lineage type Activity field Outputs []provenance.Ref
+lineage type Activity struct
+lineage type AppendRevision field Activity ID
+lineage type AppendRevision field Artifact artifacts.ID
+lineage type AppendRevision field Expected ID
+lineage type AppendRevision field History string
+lineage type AppendRevision field ID ID
+lineage type AppendRevision field Metadata map[string]json.RawMessage
+lineage type AppendRevision struct
+lineage type Edge field Activity ID
+lineage type Edge field DependencyRole string
+lineage type Edge field Evidence *Evidence
+lineage type Edge field Expression string
+lineage type Edge field From provenance.Ref
+lineage type Edge field ID string
+lineage type Edge field Kind string
+lineage type Edge field To provenance.Ref
+lineage type Edge struct
+lineage type Evidence field Artifact artifacts.ID
+lineage type Evidence field Coverage provenance.Coverage
+lineage type Evidence field Path string
+lineage type Evidence struct
+lineage type HeadConflictError field Actual ID
+lineage type HeadConflictError field Expected ID
+lineage type HeadConflictError field History string
+lineage type HeadConflictError struct
+lineage type ID string
+lineage type LeaseError = journal.LeaseError
+lineage type Node field Depth int
+lineage type Node field Ref provenance.Ref
+lineage type Node struct
+lineage type Options field IndexedMetadata []string
+lineage type Options field MaxBytes int64
+lineage type Options field MaxRecords int
+lineage type Options field Relaxed bool
+lineage type Options field Root string
+lineage type Options field ValidateAssertion func(context.Context, string) error
+lineage type Options field ValidateSelector func(context.Context, provenance.Ref) error
+lineage type Options struct
+lineage type Page field NextCursor string
+lineage type Page field Records []Record
+lineage type Page struct
+lineage type Query field Activity ID
+lineage type Query field ActivityKind string
+lineage type Query field Cursor string
+lineage type Query field DependencyRole string
+lineage type Query field History string
+lineage type Query field IncludeInternal bool
+lineage type Query field Kind string
+lineage type Query field Limit int
+lineage type Query field Metadata map[string]json.RawMessage
+lineage type Query field Ref *provenance.Ref
+lineage type Query field RelationshipKind string
+lineage type Query field Role string
+lineage type Query struct
+lineage type Record field Activity *Activity
+lineage type Record field ID ID
+lineage type Record field Relationship *Relationship
+lineage type Record field Revision *Revision
+lineage type Record field Sequence uint64
+lineage type Record struct
+lineage type RecordError field Committed bool
+lineage type RecordError field Err error
+lineage type RecordError field ID ID
+lineage type RecordError struct
+lineage type Relationship field Activity ID
+lineage type Relationship field Evidence []Evidence
+lineage type Relationship field From provenance.Ref
+lineage type Relationship field Kind string
+lineage type Relationship field Metadata map[string]json.RawMessage
+lineage type Relationship field To provenance.Ref
+lineage type Relationship struct
+lineage type Revision field Activity ID
+lineage type Revision field Artifact artifacts.ID
+lineage type Revision field History string
+lineage type Revision field Metadata map[string]json.RawMessage
+lineage type Revision field Parents []ID
+lineage type Revision struct
+lineage type Service struct
+lineage type Store interface
+lineage type Store method Get(context.Context, ID) (Record, error)
+lineage type Store method List(context.Context, Query) (Page, error)
+lineage type Store method Record(context.Context, Record) (ID, error)
+lineage type Store method Traverse(context.Context, TraversalQuery) (TraversalPage, error)
+lineage type TraversalPage field Coverage []provenance.Coverage
+lineage type TraversalPage field Edges []Edge
+lineage type TraversalPage field NextCursor string
+lineage type TraversalPage field Nodes []Node
+lineage type TraversalPage field Reason string
+lineage type TraversalPage field Truncated bool
+lineage type TraversalPage struct
+lineage type TraversalQuery field Cursor string
+lineage type TraversalQuery field DependencyRole string
+lineage type TraversalQuery field Direction string
+lineage type TraversalQuery field IncludeInternal bool
+lineage type TraversalQuery field Kinds []string
+lineage type TraversalQuery field Limit int
+lineage type TraversalQuery field MaxDepth int
+lineage type TraversalQuery field MaxNodes int
+lineage type TraversalQuery field MaxResults int
+lineage type TraversalQuery field Root provenance.Ref
+lineage type TraversalQuery struct
+lineage var ErrClosed
+lineage var ErrConflict
+lineage var ErrCursor
+lineage var ErrHeadConflict
+lineage var ErrInvalid
+lineage var ErrLeaseHeld
+lineage var ErrLimit
+lineage var ErrNotFound
+lineage var ErrUnsupportedSelector
+objects const JSON
+objects const JSONEncoding
+objects const JSONPointer
+objects const NDJSON
+objects const SQL
+objects const SchemaVersion
+objects const Table
+objects const ValidatorVersion
+objects func (e *MaterializeError) Error() string
+objects func (e *MaterializeError) Unwrap() error
+objects func (e *PublicationError) Error() string
+objects func (e *PublicationError) Unwrap() error
+objects func (s *Service) Capabilities(ctx context.Context) (capabilities Capabilities, result error)
+objects func (s *Service) DefineSchema(ctx context.Context, definition SchemaDefinition) (id artifacts.ID, result error)
+objects func (s *Service) GetSchema(ctx context.Context, id artifacts.ID) (definition SchemaDefinition, result error)
+objects func (s *Service) GetView(ctx context.Context, id artifacts.ID) (request QueryRequest, result error)
+objects func (s *Service) Materialize(ctx context.Context, request MaterializeRequest) (out Materialized, result error)
+objects func (s *Service) Publish(ctx context.Context, request PublishRequest) (id artifacts.ID, result error)
+objects func (s *Service) Query(ctx context.Context, request QueryRequest) (ResultStream, error)
+objects func (s *Service) Rows(ctx context.Context, id artifacts.ID) (stream RowStream, result error)
+objects func (s *Service) SaveView(ctx context.Context, request QueryRequest) (id artifacts.ID, result error)
+objects func (s *Service) Validate(ctx context.Context, request ValidationRequest) (report ValidationReport, result error)
+objects func (s *Service) ValidateRef(ctx context.Context, ref provenance.Ref) (result error)
+objects func CheckJSON(raw []byte, sh Shape) error
+objects func KeyRowID(d SchemaDefinition, key ...any) (string, error)
+objects func New(blobs cas.Store, store *artifacts.Service, options Options) (*Service, error)
+objects func ValidateShape(sh Shape) error
+objects type Capabilities field JSONCoverage provenance.Coverage
+objects type Capabilities field Languages []string
+objects type Capabilities field Limits Options
+objects type Capabilities field Operators []string
+objects type Capabilities field TableCoverage provenance.Coverage
+objects type Capabilities field Types []string
+objects type Capabilities field Validator string
+objects type Capabilities struct
+objects type Column field ID string
+objects type Column field Name string
+objects type Column field Shape Shape
+objects type Column field Unique bool
+objects type Column struct
+objects type Input field Alias string
+objects type Input field Artifact artifacts.ID
+objects type Input field Revision string
+objects type Input struct
+objects type MaterializeError field Err error
+objects type MaterializeError field Materialized
+objects type MaterializeError struct
+objects type MaterializeRequest field Metadata map[string]json.RawMessage
+objects type MaterializeRequest field OutputRevision string
+objects type MaterializeRequest field Query QueryRequest
+objects type MaterializeRequest field Schema artifacts.ID
+objects type MaterializeRequest struct
+objects type Materialized field Artifact artifacts.ID
+objects type Materialized field ArtifactRegistered bool
+objects type Materialized field Coverage provenance.Coverage
+objects type Materialized field Evidence artifacts.ID
+objects type Materialized field EvidencePath string
+objects type Materialized field EvidenceRegistered bool
+objects type Materialized field Rows int64
+objects type Materialized struct
+objects type Options field MaxBytes int64
+objects type Options field MaxDependencies int
+objects type Options field MaxGroups int
+objects type Options field MaxJoinPairs int
+objects type Options field MaxResultRows int
+objects type Options field MaxRowBytes int
+objects type Options field MaxRows int
+objects type Options field TempDir string
+objects type Options struct
+objects type PublicationError field Artifact artifacts.ID
+objects type PublicationError field ArtifactRegistered bool
+objects type PublicationError field Content cas.ID
+objects type PublicationError field ContentCommitted bool
+objects type PublicationError field Err error
+objects type PublicationError struct
+objects type PublishRequest field Metadata map[string]json.RawMessage
+objects type PublishRequest field ValidationRequest
+objects type PublishRequest struct
+objects type QueryRequest field Inputs []Input
+objects type QueryRequest field Language string
+objects type QueryRequest field Parameters map[string]any
+objects type QueryRequest field RequireComplete bool
+objects type QueryRequest field Text string
+objects type QueryRequest struct
+objects type ResultRow field Columns map[string][]provenance.Dependency
+objects type ResultRow field Dependencies []provenance.Dependency
+objects type ResultRow field Expressions map[string]string
+objects type ResultRow field ID string
+objects type ResultRow field Values map[string]any
+objects type ResultRow struct
+objects type ResultStream interface
+objects type ResultStream method Close() error
+objects type ResultStream method Coverage() provenance.Coverage
+objects type ResultStream method Next() (ResultRow, error)
+objects type Row field ID string
+objects type Row field Values map[string]any
+objects type Row struct
+objects type RowStream interface
+objects type RowStream method Close() error
+objects type RowStream method Next() (Row, error)
+objects type SchemaDefinition field Columns []Column
+objects type SchemaDefinition field JSON *Shape
+objects type SchemaDefinition field Key []string
+objects type SchemaDefinition field Model string
+objects type SchemaDefinition field Version string
+objects type SchemaDefinition struct
+objects type Service struct
+objects type Shape field Enum []json.RawMessage
+objects type Shape field Items *Shape
+objects type Shape field MaxLength int
+objects type Shape field Maximum *float64
+objects type Shape field Minimum *float64
+objects type Shape field Nullable bool
+objects type Shape field Properties map[string]Shape
+objects type Shape field Required []string
+objects type Shape field Type string
+objects type Shape struct
+objects type ValidationReport field Coverage provenance.Coverage
+objects type ValidationReport field Data artifacts.ID
+objects type ValidationReport field Encoding string
+objects type ValidationReport field Issues []string
+objects type ValidationReport field Rows int64
+objects type ValidationReport field Schema artifacts.ID
+objects type ValidationReport field Valid bool
+objects type ValidationReport field Validator string
+objects type ValidationReport struct
+objects type ValidationRequest field Data artifacts.ID
+objects type ValidationRequest field Encoding string
+objects type ValidationRequest field Schema artifacts.ID
+objects type ValidationRequest struct
+objects var ErrLimit
+objects var ErrQuery
+objects var ErrSchema
+objects var ErrUnsupported
+objects var ErrValidation
+observability const Internal
+observability const User
+observability func (c *Collector) Reset()
+observability func (c *Collector) Snapshot(options SnapshotOptions) map[Scope]Metrics
+observability func (s *Span) AddBytes(n int64)
+observability func (s *Span) Count(name string, n int64)
+observability func (s *Span) End(err error)
+observability func (s *Span) RecordError(err error)
+observability func CategoryFrom(ctx context.Context) Category
+observability func Start(ctx context.Context, scope Scope, key string) (context.Context, *Span)
+observability func With(ctx context.Context, options Options) context.Context
+observability func WithInternal(ctx context.Context) context.Context
+observability type Category uint8
+observability type Collector struct
+observability type Event field Bytes int64
+observability type Event field Category Category
+observability type Event field Counters map[string]int64
+observability type Event field Elapsed time.Duration
+observability type Event field Err error
+observability type Event field Final bool
+observability type Event field ID uint64
+observability type Event field Key string
+observability type Event field ParentID uint64
+observability type Event field Scope Scope
+observability type Event field Total int64
+observability type Event struct
+observability type Metrics field Bytes int64
+observability type Metrics field Completed uint64
+observability type Metrics field Counters map[string]int64
+observability type Metrics field Duration time.Duration
+observability type Metrics field Errors uint64
+observability type Metrics field Started uint64
+observability type Metrics struct
+observability type Options field Collector *Collector
+observability type Options field IncludeInternal bool
+observability type Options field Observer func(Event)
+observability type Options field ProgressInterval time.Duration
+observability type Options field Total func(Scope, string) (int64, bool)
+observability type Options struct
+observability type Scope field Layer string
+observability type Scope field Operation string
+observability type Scope struct
+observability type SnapshotOptions field IncludeInternal bool
+observability type SnapshotOptions struct
+observability type Span struct
+provenance const Complete
+provenance const Control
+provenance const FormActivity
+provenance const FormAssertion
+provenance const FormCell
+provenance const FormColumn
+provenance const FormContent
+provenance const FormExternal
+provenance const FormOccurrence
+provenance const FormPath
+provenance const FormRow
+provenance const FormSnapshot
+provenance const GrammarVersion
+provenance const Incomplete
+provenance const Predicate
+provenance const Unsupported
+provenance const Value
+provenance func (c Coverage) Validate() error
+provenance func (m Mapping) Validate() error
+provenance func (r Ref) Detailed() bool
+provenance func (r Ref) Form() string
+provenance func (r Ref) Validate() error
+provenance func (r Ref) Weight() int
+provenance func (v Resolver) Check(ctx context.Context, ref Ref) error
+provenance func ValidRecordID(id string) bool
+provenance type Change field Activity string
+provenance type Change field Actor string
+provenance type Change field Class string
+provenance type Change field ID string
+provenance type Change field Internal bool
+provenance type Change field Kind string
+provenance type Change field Sequence uint64
+provenance type Change struct
+provenance type ChangePage field Changes []Change
+provenance type ChangePage field Last uint64
+provenance type ChangePage struct
+provenance type ChangeQuery field After uint64
+provenance type ChangeQuery field IncludeInternal bool
+provenance type ChangeQuery field Limit int
+provenance type ChangeQuery struct
+provenance type Coverage field Columns string
+provenance type Coverage field Predicates string
+provenance type Coverage field Reasons []string
+provenance type Coverage field Rows string
+provenance type Coverage field Values string
+provenance type Coverage struct
+provenance type Dependency field Ref Ref
+provenance type Dependency field Role string
+provenance type Dependency struct
+provenance type Mapping field Expression string
+provenance type Mapping field Inputs []Dependency
+provenance type Mapping field Output Ref
+provenance type Mapping struct
+provenance type Ref field Activity string
+provenance type Ref field Artifact string
+provenance type Ref field Assertion string
+provenance type Ref field Column string
+provenance type Ref field Digest string
+provenance type Ref field Length int64
+provenance type Ref field Occurrence string
+provenance type Ref field Offset int64
+provenance type Ref field Path string
+provenance type Ref field Retrieval string
+provenance type Ref field Revision string
+provenance type Ref field Row string
+provenance type Ref field Schema string
+provenance type Ref field URL string
+provenance type Ref field Version int
+provenance type Ref struct
+provenance type Resolver field Activity func(ctx context.Context, activity string) error
+provenance type Resolver field Artifact func(ctx context.Context, artifact string) error
+provenance type Resolver field Assertion func(ctx context.Context, assertion string) error
+provenance type Resolver field Content func(ctx context.Context, digest string) (size int64, err error)
+provenance type Resolver field File func(ctx context.Context, artifact, path string) (size int64, err error)
+provenance type Resolver field Occurrence func(ctx context.Context, occurrence string) (artifact string, err error)
+provenance type Resolver field Revision func(ctx context.Context, revision, artifact string) error
+provenance type Resolver field Selector func(ctx context.Context, ref Ref) error
+provenance type Resolver struct
+provenance var ErrChangeLimit
+provenance var ErrUnsupportedForm
+storage func (e *PutError) Error() string
+storage func (e *PutError) Unwrap() error
+storage func (s *Filesystem) Exists(ctx context.Context, key string) (exists bool, result error)
+storage func (s *Filesystem) Open(ctx context.Context, key string) (reader io.ReadCloser, result error)
+storage func (s *Filesystem) OpenSeekable(ctx context.Context, key string) (file File, result error)
+storage func (s *Filesystem) Put(ctx context.Context, key string, source io.Reader) (result error)
+storage func (s *Filesystem) Remove(ctx context.Context, key string, olderThan time.Time) (removed bool, result error)
+storage func (s *Filesystem) Stat(ctx context.Context, key string) (info Info, result error)
+storage func (s *Filesystem) SweepPending(ctx context.Context, olderThan time.Time) (removed int, result error)
+storage func (s *Filesystem) Walk(ctx context.Context, visit func(key string, info Info) error) (result error)
+storage func NewFilesystem(root string) (*Filesystem, error)
+storage type File interface
+storage type File method io.ReadSeekCloser
+storage type File method io.ReaderAt
+storage type Filesystem struct
+storage type Info field ModTime time.Time
+storage type Info field Size int64
+storage type Info struct
+storage type PutError field Err error
+storage type PutError field Published bool
+storage type PutError struct
+storage type Reclaimer interface
+storage type Reclaimer method Remove(ctx context.Context, key string, olderThan time.Time) (bool, error)
+storage type Reclaimer method SweepPending(ctx context.Context, olderThan time.Time) (int, error)
+storage type Reclaimer method Walk(ctx context.Context, visit func(key string, info Info) error) error
+storage type Seekable interface
+storage type Seekable method OpenSeekable(ctx context.Context, key string) (File, error)
+storage type Stater interface
+storage type Stater method Stat(ctx context.Context, key string) (Info, error)
+storage type Store interface
+storage type Store method Exists(ctx context.Context, key string) (bool, error)
+storage type Store method Open(ctx context.Context, key string) (io.ReadCloser, error)
+storage type Store method Put(ctx context.Context, key string, source io.Reader) error
+storage var ErrAlreadyExists
+storage var ErrInvalidKey
+storage var ErrNotFound
