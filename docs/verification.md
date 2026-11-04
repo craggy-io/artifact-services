@@ -51,8 +51,10 @@ next open to succeed.
 On 2026-11-04 this ran on Windows amd64 (NTFS) and on Linux amd64 (`golang:1.27` container,
 non-root, overlay filesystem), 145 kills each, so the Unix lease and directory-sync code has
 executed. On Linux, the full `go test ./...`, the nested module's tests, and `-race` for
-`integration`, `internal/journal`, `storage` and `assertions` also passed. macOS has only been
-vetted and built, not run.
+`integration`, `internal/journal`, `storage` and `assertions` also passed. macOS had only
+been vetted and built at that point; since the CI workflow landed, the full suite (including
+this crash qualification and the Darwin lease/directory-sync paths) passes on `macos-latest`
+for both v0.1.0-tagged commits (`e8736ec`, `2cc9133`).
 
 This qualifies process death. It cannot show that a flush reached stable media, so power loss
 is implemented as described in [durability](durability.md) but not physically tested.
