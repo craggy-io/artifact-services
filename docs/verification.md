@@ -71,34 +71,22 @@ reader completion, progress/metrics and temporary cleanup, then removes its owne
 fixture. Routine tests skip this trial. No whole-blob buffer is allocated; the
 trial fails if sampled `HeapAlloc` grows more than 256 MiB over its baseline.
 
-Measured on 2026-11-04, Go 1.27.3 windows/amd64, with context observation enabled:
+The CAS trial runs with the same environment switch:
+`go test ./integration -run '^TestLargeCAS1GiB$' -count=1 -v`. It verifies the CAS
+identity, EOF integrity, both layers' counters, and staging cleanup.
 
-| Measurement | Result |
-| --- | --- |
-| Verified bytes | 1,073,741,824 |
-| Write (generation/hash/Sync included) | 2.539 s; 403.30 MiB/s |
-| Read (hash included) | 0.745 s; 1,374.40 MiB/s |
-| Go HeapAlloc baseline / sampled maximum | 0.38 / 3.45 MiB |
-| Memory sampling | 328 samples at nominal 10 ms intervals |
-| Observation events | 122 |
-| SHA-256 | `9cc5601236c455c6af19a76e64d2d95953a93b10eeb8b8b756a57090e1499b3e` |
+Current figures, re-measured on 2026-11-04, Go 1.27.3 windows/amd64, with context
+observation and durable (non-relaxed) publication enabled. Both trials verified
+1,073,741,824 bytes with SHA-256
+`9cc5601236c455c6af19a76e64d2d95953a93b10eeb8b8b756a57090e1499b3e`:
 
-The table above is the original storage baseline, before category filtering.
-A fresh storage trial after filtering and extraction of the shared streaming test
-helper passed: write 2.459 s (416.44 MiB/s), read 0.767 s (1,334.53 MiB/s),
-HeapAlloc baseline/sample maximum 0.38/3.44 MiB, 322 samples, 120 events.
+| Trial | Write | Read | HeapAlloc baseline / sampled peak |
+| --- | --- | --- | --- |
+| Storage (`TestLargeBlob1GiB`) | 2.812 s; 364.19 MiB/s | 0.802 s; 1,277.25 MiB/s | 0.38 / 3.45 MiB (361 samples) |
+| CAS over storage (`TestLargeCAS1GiB`) | 3.940 s; 259.88 MiB/s | 1.274 s; 803.81 MiB/s | 0.39 / 3.60 MiB (521 samples) |
 
-A separate CAS-over-storage trial also passed with the same exact byte count and
-digest: write 3.621 s (282.81 MiB/s), read 1.253 s (817.24 MiB/s), HeapAlloc
-baseline/sample maximum 0.38/3.60 MiB, 487 samples. It verifies the CAS identity,
-EOF integrity, both layers' counters, and staging cleanup. Run it with the same
-environment switch using `go test ./integration -run '^TestLargeCAS1GiB$' -count=1 -v`.
-Both fresh trials ran on 2026-11-04 with Go 1.27.3 windows/amd64.
-
-Both trials ran again on 2026-11-04 after durable publication added name flushing to Put, and
-passed: storage write 2.991 s (342.41 MiB/s), read 0.802 s (1,276.29 MiB/s), HeapAlloc
-baseline/sample maximum 0.38/3.45 MiB; CAS write 3.874 s (264.34 MiB/s), read 1.305 s
-(784.97 MiB/s), HeapAlloc baseline/sample maximum 0.39/3.47 MiB. These are the current figures.
+Write/read include byte generation, hashing and observation. Earlier figures in
+git history predate durable publication and are superseded by this table.
 
 This is one local trial, not a storage benchmark guarantee. Read performance may
 benefit from OS caching. HeapAlloc samples can miss transient peaks and exclude
@@ -112,15 +100,19 @@ from 50,000 to 1,000,000 entries and enables `TestMillionRowTrial`. The tree tri
 measured after publishing and after paging has grown more than 64 MiB. The row trial samples heap
 continuously and fails past 256 MiB. Both read `HeapAlloc`, with the limits noted above.
 
-Measured on 2026-11-04, Go 1.27.3 windows/amd64: the tree trial published, paged and opened
-1,000,000 entries in 76.0 s, and the row trial validated, iterated and queried 1,000,000 rows
-in 112.2 s with a peak sampled heap of 52 MiB against a 256 MiB bound. One local run, not a
-performance guarantee.
+Re-measured on 2026-11-04, Go 1.27.3 windows/amd64: the tree trial published, paged and
+opened 1,000,000 entries in 52.6 s (within its 64 MiB heap-growth bound), and the row trial
+validated, iterated and queried 1,000,000 rows in 71.5 s with a peak sampled heap of
+53 MiB against a 256 MiB bound. One local run, not a performance guarantee.
 
 ## Cross-layer implementation checks
 
 On 2026-11-04, the full normal and race-enabled suites, `go vet ./...`, and
-`go build ./...` passed on Windows amd64. Routine skips were the two opt-in large
+`go build ./...` passed on Windows amd64. Continuous integration
+(`.github/workflows/ci.yml`) now runs gofmt/vet/build/test on Linux, Windows and
+macOS for every push, plus `-race` on Linux and Windows, in both modules; the
+macOS leg is what first executes the Darwin lease and directory-sync paths in
+this repository's automation (locally they had only been vetted and cross-built). Routine skips were the two opt-in large
 trials (both executed separately) and packages containing no tests. The CAS,
 artifact, and observability guide examples also ran successfully from a separate
 Go module consuming the public API. Local documentation links resolve.
