@@ -2,19 +2,17 @@
 
 [Project](../README.md) · [Walkthrough](walkthrough.md)
 
-Storage and observability are implemented. CAS, artifacts, Objects and lineage are proposed designs.
-
-Interface signatures in the layer guides are package-local interface methods unless explicitly shown as
-functions/receiver methods for existing APIs; proposed backend constructors and
-persistence formats are intentionally not specified. Every domain operation takes
-context first. Existing constructors, context attachment, and span/collector methods
-retain their actual signatures: spans already carry the operation configuration.
+All six layers have initial Go implementations. Each guide describes the available
+API, supported subset, resource bounds, and verification limits. Domain operations
+accept context first; constructors and context/span helpers retain their documented
+signatures. See the runnable [cross-layer walkthrough](walkthrough.md) and
+[verification evidence](verification.md).
 
 ## Layer guides
 
 - [Storage](storage.md)
 - [Observability](observability.md)
-- [Cas](cas.md)
+- [CAS](cas.md)
 - [Artifacts](artifacts.md)
 - [Objects](objects.md)
 - [Lineage](lineage.md)

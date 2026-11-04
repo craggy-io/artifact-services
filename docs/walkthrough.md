@@ -2,13 +2,20 @@
 
 [Project](../README.md) · [Documentation index](README.md)
 
-This is a design walkthrough, not executable CAS/Objects/lineage code. Only storage
-and shared observability exist today. For runnable code, use the
-[storage/observation example](observability.md#examples).
+This walkthrough is exercised by [the cross-layer integration tests](../integration/system_test.go),
+using real filesystem storage, CAS, artifacts, Objects, and lineage with shared observation:
+
+```sh
+go test ./integration -run 'TestAllLayersJoinSchemaEvolutionAndProvenance|TestTypedValidationCannotBeSpoofedAndJSONQueries' -count=1 -v
+```
+
+The tests ingest an APK, validate tables and JSON, evolve a schema, join two pinned
+histories, materialize the result, and traverse its row/cell/column provenance.
+They also check independent histories, catalog visibility, and observation filtering.
 
 ## 1. Ingest and name the bytes
 
-An application receives an APK as a stream. In the proposed stack, CAS computes
+An application receives an APK as a stream. CAS computes
 its digest using bounded-memory staging, then publishes the complete bytes through
 storage. Identical bytes can reuse verified CAS content. Storage only sees a safe
 key and a stream: it does not know that the bytes are an APK or infer history.
@@ -40,10 +47,11 @@ validate its exact snapshot against S1 and pinned validator/encoding semantics.
 Only the trusted typed-publication path may issue an accepted validated-type claim;
 a generic metadata label is insufficient.
 
-Validation may stream rows, but global constraints such as uniqueness require bounded
-state or disk-backed work with explicit limits. A failure or incomplete check is
-not success. The enforcement boundary and supported formats remain design decisions;
-this walkthrough does not claim a validator or query engine is available.
+Table validation reads NDJSON rows with explicit byte/row limits and bounded state
+for uniqueness. JSON validation checks the supported shape constraints. Accepted
+claims require the module-internal validated-publication capability plus catalog
+registration; ordinary metadata cannot impersonate a validated object. See
+[Objects](objects.md) for the exact supported formats and limits.
 
 ## 4. Evolve schema and data without mutating either
 
@@ -56,8 +64,8 @@ can maintain their own revision history. No mutable valid flag rewrites old data
 
 ## 5. Combine A and B into C while retaining separate histories
 
-Suppose table A has revision A7 and table/view B has revision B3. A query execution
-pins A7 and B3, not just their content IDs. Any requested latest labels are resolved
+Suppose table A has revision A-1 and table/view B has revision B-1. A query execution
+pins A-1 and B-1, not just their content IDs. Any requested latest labels are resolved
 before execution and those exact resolutions are recorded. A and B keep their own
 histories; output C begins or continues a distinct history. Later C revisions link
 to earlier C revisions, while derivation links cross to the selected A/B revisions.
@@ -77,10 +85,16 @@ dependencies remain distinct from value derivation. Row identities are qualified
 by exact object/history revision; columns also pin schema identity. Display names,
 row positions, or equal hashes alone do not establish ancestry.
 
+The executable example evaluates an equality join, a parameterized filter, and a
+SUM over arithmetic expressions: A values 2/3 and B values 10/20 yield 70 over
+four joined rows. Its mappings retain all four source rows, expression evidence,
+and separate predicate dependencies. Coverage describes positive emitted-result
+lineage; it does not explain rejected rows or counterfactual outcomes.
+
 Compact immutable mapping artifacts and derived indexes support bounded, paginated
 queries. Supporting records are internal in ordinary browsing, but explicitly
-requested provenance answers still resolve them. Unsupported UDFs must report
-incomplete/unsupported coverage or reject requests demanding complete detail.
+requested provenance answers still resolve them. Unsupported SQL and UDFs are rejected. JSON Pointer provides document dependencies,
+not table row/cell/column mappings.
 See [required detailed lineage](lineage.md#semantics-errors-and-limits) and
 [detailed provenance queries](queries.md#detailed-provenance-queries).
 

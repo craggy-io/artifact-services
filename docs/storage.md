@@ -8,9 +8,25 @@ Available Go API.
 
 Store opaque immutable blobs with a small streaming interface.
 
+## Features
+
+- Stream opaque blobs into temporary files, then sync, close, and publish atomically without replacing an existing key.
+- Open complete immutable blobs by key and check existence without loading payloads into memory.
+- Coordinate concurrent writers through the filesystem's create-if-absent hard link; one writer publishes each key.
+- Preserve publication outcomes in errors, including cleanup failures after commit, with cooperative context cancellation.
+- Use a local or mounted filesystem that supports atomic hard links; crash/power-loss durability and automatic crash recovery are not guaranteed.
+
 ## Mental model
 
 A key names one complete blob; publication makes it visible atomically.
+
+<p align="center">
+  <a href="assets/storage-features.svg">
+    <img src="assets/storage-features.svg" alt="Storage publication: source stream to private temporary file, sync and close, atomic non-replacing hard link, then visible immutable blob." width="100%">
+  </a>
+</p>
+
+Filesystem publication boundary; cleanup errors after commit do not undo published bytes.
 
 ## Responsibilities and boundaries
 
@@ -73,9 +89,21 @@ The root must be private/trusted; external edits, symlinks, and junctions are
 unsupported. No deletion/lifecycle API exists. A Docker-mounted root needs no
 special code, but its filesystem must support atomic non-replacing hard links.
 Unsupported filesystems return errors; there is no copy/overwrite fallback.
+Relative roots are resolved when NewFilesystem is called; later working-directory
+changes do not retarget the store. Independent processes sharing a root rely on
+the filesystem's hard-link create-if-absent operation, not a process-local mutex.
 Directory entries are not synced, so crash/power-loss durability is not guaranteed.
 Crashes can leave temporary files; automatic crash recovery is not implemented.
 
 ## Validation and evidence
 
 See [verification](verification.md) for executable checks, Windows cases, and the measured 1 GiB baseline. That evidence qualifies current storage/observation behavior only.
+
+The storage integration audit additionally exercises six separate writer processes
+publishing the same key: exactly one publishes, all other writers report an
+unpublished PutError wrapping ErrAlreadyExists, the winning content remains complete,
+and no temporary links remain. A relative-root test verifies constructor-time binding
+after changing the working directory. Both passed with the Windows storage race suite;
+the existing long-path, permission, cancellation and cleanup-outcome coverage remains.
+These checks qualify the physical contract required by CAS, not CAS's separate
+identity verification or logical deduplication behavior.
