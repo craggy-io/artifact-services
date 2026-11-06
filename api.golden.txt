@@ -209,6 +209,7 @@ adapters/typed func (t Table[T]) RowID(key ...any) (string, error)
 adapters/typed func (t Table[T]) Schema() artifacts.ID
 adapters/typed func DefineKind[T any](ctx context.Context, service *assertions.Service, definition KindDefinition) (Kind[T], error)
 adapters/typed func DefineTable[T any](ctx context.Context, services Services, key ...string) (Table[T], error)
+adapters/typed func Memo[T any](ctx context.Context, service *assertions.Service, key string, build func(context.Context) (T, error)) (T, error)
 adapters/typed func Replacing(id assertions.ID) Option
 adapters/typed func Rows[T any](ctx context.Context, service *objects.Service, id artifacts.ID) iter.Seq2[T, error]
 adapters/typed func ShapeOf[T any]() (objects.Shape, error)
