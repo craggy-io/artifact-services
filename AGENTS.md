@@ -18,7 +18,7 @@ Start with the [walkthrough](docs/walkthrough.md) and
 | Generic activities, independent revisions and explicit provenance mappings | [Lineage](docs/lineage.md) |
 | Typed statements, current views, keyed uniqueness and writer authority | [Assertions](docs/assertions.md) |
 | Context scopes, progress, semantic counters and visibility | [Observability](docs/observability.md) |
-| Wiring, runs, typed sugar, tree I/O, spooling, GC, test kit, read-only SQL | [Adapters](docs/adapters.md) |
+| Wiring, runs, typed sugar, tree I/O, spooling, GC, journal watch, test kit, read-only SQL | [Adapters](docs/adapters.md) |
 
 Objects, lineage and assertions sit over artifacts; artifacts uses CAS, which uses
 storage. Adapters compose public APIs only and hold no privilege. Shared `provenance` types carry neutral references and evidence. Keep
@@ -130,6 +130,7 @@ explicitly. Snapshot consistency is local to each query, not a transaction acros
 all layers. Internal discovery is opt-in; known-ID access is not an authorization
 boundary. Journal projections can be rebuilt from authoritative records. For a lossless feed, keep a
 position and read `Changes`; `OnCommit` is a coalesced wake-up, not a delivery log.
+`adapters/watch` does both for all three journals.
 
 ## Developing and verifying in this repository
 
