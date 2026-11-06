@@ -128,7 +128,9 @@ adapters/spool func OpenFile(ctx context.Context, store *artifacts.Service, id a
 adapters/spool type File field *os.File
 adapters/spool type File struct
 adapters/stack func (s *Stack) Close() error
+adapters/stack func (s *Stack) PublishTable(ctx context.Context, memo string, def objects.SchemaDefinition, rows []map[string]any) (artifacts.ID, error)
 adapters/stack func Open(o Options) (*Stack, error)
+adapters/stack func TableSchema(key []string, cols ...objects.Column) objects.SchemaDefinition
 adapters/stack type Options field ArtifactMetadata []string
 adapters/stack type Options field Authority *assertions.Authority
 adapters/stack type Options field LineageMetadata []string

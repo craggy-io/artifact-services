@@ -26,6 +26,11 @@ in that order. A root opened this way holds three leases, and all are released o
 `Close` or process death. This is the wiring [AGENTS.md](../AGENTS.md) describes, in
 executable form. Open one stack per independent root; the consumer decides how many.
 
+`Stack.PublishTable(ctx, memo, def, rows)` publishes rows as a table artifact validated
+against `def`, defining the schema once per assertions service and memo key (a changed
+definition under one key fails). `TableSchema(key, cols...)` builds a table definition
+whose key columns are non-nullable and every other column nullable.
+
 ## runs
 
 `runs` coordinates records around a function you supply. It executes nothing itself,
