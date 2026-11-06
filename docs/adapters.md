@@ -14,6 +14,7 @@ has privileged access, so anything here could be rebuilt by a consumer.
 | [`treeio`](#treeio) | Move directories and files in and out of artifacts |
 | [`spool`](#spool) | Get a seekable, verified file from any store |
 | [`gc`](#gc) | Find and reclaim unreferenced content, and verify a stack |
+| [`watch`](#watch) | Follow every commit to the journals, once and in order, from a saved position |
 | [`testkit`](#testkit) | Build a full stack in a test |
 | [`sqlindex`](#sqlindex) | Query everything with read-only SQL (separate Go module) |
 
@@ -119,6 +120,33 @@ horizon spares anything written or re-Put recently, protecting work between `Put
 `Publish`, so it must exceed the longest such gap in your application. Too short a
 horizon costs a failed, retryable publication, never a dangling reference. Nothing here
 removes a registered artifact; retention remains consumer policy.
+
+## watch
+
+`watch` follows the artifact, lineage and assertion journals through their public
+`Sequence`, `Changes` and `OnCommit`. It waits for commit notifications and never polls.
+
+```go
+from, err := watch.Current(ctx, watch.Of(st)) // or a saved Position; zero is the start
+w := watch.Start(ctx, watch.Of(st), watch.Options{From: from}, func(ctx context.Context, b watch.Batch) error {
+    // b.Journal names the journal; each b.Changes entry carries its Class, ID, Kind, Actor.
+    return save(b.Position) // store it with the batch's effects
+})
+err = w.Stop() // before closing the stack
+```
+
+- **Once, in order.** Each journal's changes arrive in sequence order, in batches of at
+  most `Options.Limit`. A drain is one catch-up from the watch's position, so coalesced
+  notifications lose nothing and a burst of commits is one drain.
+- **Across journals.** Journals share no sequence. A drain reports artifacts, then lineage,
+  then assertions, each bounded by a tail read before the journals it can reference, so a
+  record arrives after the records it references.
+- **Restart.** `Batch.Position` is the position once that batch is handled. Store it with
+  the batch's effects and pass it as `Options.From` to resume without repeats or gaps.
+- **Failure.** A handler or read error ends the watch without advancing past the failed
+  batch; `Stop` returns it. `Drain` reads once, to the tails at the call, without following.
+- `Options.IncludeInternal` reports internal records; left out, they still advance the
+  position. `Journals` can name any subset, or other implementations of `Journal`.
 
 ## testkit
 

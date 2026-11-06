@@ -241,6 +241,38 @@ adapters/typed type Services struct
 adapters/typed type Table[T any] field TempDir string
 adapters/typed type Table[T any] struct
 adapters/typed var ErrUnsupportedType
+adapters/watch const Artifacts
+adapters/watch const Assertions
+adapters/watch const Lineage
+adapters/watch func (w *Watch) Done() <-chan struct{}
+adapters/watch func (w *Watch) Position() Position
+adapters/watch func (w *Watch) Stop() error
+adapters/watch func Current(ctx context.Context, j Journals) (Position, error)
+adapters/watch func Drain(ctx context.Context, j Journals, o Options, handle Handler) (Position, error)
+adapters/watch func Of(s *stack.Stack) Journals
+adapters/watch func Start(ctx context.Context, j Journals, o Options, handle Handler) *Watch
+adapters/watch type Batch field Changes []provenance.Change
+adapters/watch type Batch field Journal string
+adapters/watch type Batch field Position Position
+adapters/watch type Batch struct
+adapters/watch type Handler func(ctx context.Context, b Batch) error
+adapters/watch type Journal interface
+adapters/watch type Journal method Changes(ctx context.Context, q provenance.ChangeQuery) (provenance.ChangePage, error)
+adapters/watch type Journal method OnCommit(hook func(sequence uint64)) (stop func())
+adapters/watch type Journal method Sequence(ctx context.Context) (uint64, error)
+adapters/watch type Journals field Artifacts Journal
+adapters/watch type Journals field Assertions Journal
+adapters/watch type Journals field Lineage Journal
+adapters/watch type Journals struct
+adapters/watch type Options field From Position
+adapters/watch type Options field IncludeInternal bool
+adapters/watch type Options field Limit int
+adapters/watch type Options struct
+adapters/watch type Position field Artifacts uint64
+adapters/watch type Position field Assertions uint64
+adapters/watch type Position field Lineage uint64
+adapters/watch type Position struct
+adapters/watch type Watch struct
 artifacts const ChangeArtifact
 artifacts const ChangeOccurrence
 artifacts const KindDir

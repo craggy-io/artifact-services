@@ -197,6 +197,7 @@ Artifacts, lineage and assertions each expose the same three calls:
   as "something changed, read `Changes` from your position", which is what makes it lossless.
 
 Each journal has its own sequence. There is no global order across journals.
+[`adapters/watch`](adapters.md#watch) follows all three from one saved position.
 
 ## Authoritative facts, indexes, and visibility
 

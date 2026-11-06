@@ -12,8 +12,8 @@ shared observation across operations.
 
 All seven layers have Go implementations with explicit resource and backend limits. Objects,
 lineage and assertions sit over artifacts; artifacts builds on CAS, which builds on storage.
-Optional [adapters](docs/adapters.md) add wiring, run coordination, typed access, tree I/O, GC
-and read-only SQL. See the layer guides for supported subsets and
+Optional [adapters](docs/adapters.md) add wiring, run coordination, typed access, tree I/O, GC,
+journal watching and read-only SQL. See the layer guides for supported subsets and
 [verification evidence](docs/verification.md) for qualification limits.
 
 ## Features

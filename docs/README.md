@@ -25,7 +25,7 @@ Each guide uses the same sections: purpose, mental model, responsibilities and b
 - [Query contracts](queries.md): discovery, traversal, snapshot cursors, index authority and visibility.
 - [Walkthrough](walkthrough.md): ingestion, typed snapshots, schema evolution and cross-history derivation.
 - [Durability](durability.md): what success promises, crash recovery, and retryable composite operations.
-- [Adapters](adapters.md): optional packages for wiring, runs, typed access, tree I/O, spooling, GC, testing and SQL.
+- [Adapters](adapters.md): optional packages for wiring, runs, typed access, tree I/O, spooling, GC, journal watching, testing and SQL.
 - [Stability](stability.md): API drift guard, releases and on-disk format policy.
 - [Verification](verification.md): runnable checks, crash qualification and qualified large-scale measurements.
 - [Successor requirements](successor-requirements.md): a consumer's (CC Lab) requirements list for replacing cclab-storage with artifact-services — what must be core, what generic adapters, and what stays consumer-side.
