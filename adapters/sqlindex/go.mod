@@ -3,7 +3,7 @@ module github.com/craggy-io/artifact-services/adapters/sqlindex
 go 1.27.0
 
 require (
-	github.com/craggy-io/artifact-services v0.1.0
+	github.com/craggy-io/artifact-services v0.1.1-0.20261106062912-4957bd059df5
 	modernc.org/sqlite v1.61.1
 )
 
