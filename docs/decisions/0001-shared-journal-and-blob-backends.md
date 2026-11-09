@@ -71,7 +71,8 @@ Read from `internal/journal` and every caller before the change; each item is no
 - `Options.Relaxed`, `MaxRecords` and `MaxBytes` configure only the file log.
 - Pools must allow one listener plus a commit and a read per root (six for a full stack).
   Size them with Cloud Run's max instances against Cloud SQL's connection limit.
-- Tests: `backend/backendtest` runs on both logs, `adapters/stack/stacktest` on local,
+- Tests: `backend/backendtest` runs on both logs and on its in-memory shared log
+  (`Memory`, for consumers' multi-process and point-in-time restore tests), `adapters/stack/stacktest` on local,
   GCS and PostgreSQL backends, including two stacks on one database racing guarded commits
   for ten rounds. The server-backed tests fail rather than skip without their servers.
 

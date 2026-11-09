@@ -64,6 +64,12 @@ default and lose nothing. With a shared backend:
   may in fact exist; an identical retry then reuses it.
 - **Recovery is reopening** here too. There are no leases: a dead process holds nothing.
 
+For tests of code that runs as several processes, `backendtest.NewMemory()` holds shared
+journals in memory: each `Opener` from its `Open` (a `backend.Journals`) is another
+process's handle on one root, and a commit wakes the other handles' watchers. `Copy` is a
+point-in-time recovery. It passes the shared conformance suite; pair it with one
+`storage.NewFilesystem` directory as the shared blobs.
+
 ## Recovering from a crash
 
 Reopen. There is no recovery operation.
