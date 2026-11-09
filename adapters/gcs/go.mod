@@ -4,7 +4,7 @@ go 1.27.0
 
 require (
 	cloud.google.com/go/storage v1.70.0
-	github.com/craggy-io/artifact-services v0.1.1-0.20261106062912-4957bd059df5
+	github.com/craggy-io/artifact-services v0.1.1-0.20261109202641-1379b3213f23
 	google.golang.org/api v0.307.0
 )
 

@@ -3,7 +3,7 @@ module github.com/craggy-io/artifact-services/adapters/postgres
 go 1.27.0
 
 require (
-	github.com/craggy-io/artifact-services v0.1.1-0.20261106062912-4957bd059df5
+	github.com/craggy-io/artifact-services v0.1.1-0.20261109202641-1379b3213f23
 	github.com/jackc/pgx/v5 v5.12.0
 )
 

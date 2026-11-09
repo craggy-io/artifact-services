@@ -1,3 +1,5 @@
+github.com/craggy-io/artifact-services v0.1.1-0.20261109202641-1379b3213f23 h1:si4fJQWPR5+5m9WZfektsWXDBficD1rq4niWoiZ1VgM=
+github.com/craggy-io/artifact-services v0.1.1-0.20261109202641-1379b3213f23/go.mod h1:uV3Ka4zSZOGFrqNRiiAP3DbefO+GEpmEZuDFBU/2XzE=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
