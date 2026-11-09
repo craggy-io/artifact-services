@@ -30,11 +30,45 @@ it for speed. Storage has no relaxed mode.
 If truncating after a failed commit also fails, the on-disk tail is unknown, so the
 journal refuses further commits until it is reopened.
 
+## Shared backends
+
+By default each journal root is a local file under an exclusive OS lease, so one live
+process owns it. The [`backend`](../backend/backend.go) seam lets a root live in a shared
+log instead, so several processes serve one stack: [`adapters/postgres`](adapters.md#postgres)
+for journals and [`adapters/gcs`](adapters.md#gcs) for blobs. The local backends stay the
+default and lose nothing. With a shared backend:
+
+- **Commit order is sequence order.** A commit is one PostgreSQL transaction that locks its
+  root's row, so sequences stay contiguous and the change feed's resume position never
+  skips a record. This serialises commits per root, which caps write throughput per stack;
+  shard by root if that ever matters.
+- **Guards hold across processes.** Inside that transaction the process first applies
+  every record it has not yet seen, then runs the layer's guard (`Txn.Check`, for example a
+  guarded history's expected head), then inserts. Of two racing writers on any processes,
+  exactly one wins and the other gets the layer's conflict. Transactions replace the local
+  file lock.
+- **Reads see every finished commit.** Each layer keeps its indexes in memory, as locally,
+  and catches them up to the log's latest sequence (one indexed query) before answering any
+  read. A read therefore sees every commit that finished before it began, whichever
+  process made it. Opening replays the whole journal; measure that cost as history grows.
+- **`OnCommit` wakes for other processes too.** A commit sends a `NOTIFY`; listeners catch
+  up and wake their hooks. It is still a coalesced wake-up, not a delivery log: keep a
+  position and read `Changes`.
+- **Blobs are written before metadata.** Content reaches the bucket (create-if-absent)
+  before the journal transaction that references it, so a record never names a missing
+  blob. Content from failed commits is left for [`gc`](adapters.md#gc).
+- **Success means the database committed.** Durability is PostgreSQL's and the bucket's;
+  `Options.Relaxed`, `MaxRecords` and `MaxBytes` configure only the local file log. If a
+  `COMMIT` fails without a server error (a lost connection), the log reads the record back
+  to decide. If it cannot, the error is a `CommitError` with `Committed` false whose record
+  may in fact exist; an identical retry then reuses it.
+- **Recovery is reopening** here too. There are no leases: a dead process holds nothing.
+
 ## Recovering from a crash
 
 Reopen. There is no recovery operation.
 
-- **Leases.** A root's lease is an OS file lock, which the kernel releases when the owner
+- **Leases** (local backend). A root's lease is an OS file lock, which the kernel releases when the owner
   dies, so a dead owner cannot block anyone and there is nothing to reclaim. The `.lease`
   file is never deleted, and do not delete it yourself. A *live* owner still excludes
   others, with `ErrLeaseHeld` and a `LeaseError` naming its PID, host and start time. Those

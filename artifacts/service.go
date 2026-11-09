@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/craggy-io/artifact-services/backend"
 	"github.com/craggy-io/artifact-services/cas"
 	"github.com/craggy-io/artifact-services/internal/canon"
 	"github.com/craggy-io/artifact-services/internal/crashpoint"
@@ -49,6 +50,8 @@ type Options struct {
 	MaxLinkDepth           int
 	Relaxed                bool
 	TempDir                string
+	// Journal selects the catalog's record log; nil keeps the local file log at Root.
+	Journal backend.Opener
 }
 
 type acceptedClaim struct {
@@ -137,12 +140,13 @@ func New(blobs cas.Store, options Options) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	records, err := journal.Open(options.Root, journal.Options{Config: config, MaxRecords: options.MaxRecords, MaxBytes: options.MaxBytes, Relaxed: options.Relaxed})
+	result := &Service{blobs: blobs, indexed: indexed, options: options, index: newCatalogIndex(), files: pager.New[Entry](), searches: pager.New[uint64]()}
+	records, err := journal.Open(options.Root, journal.Options{Config: config, MaxRecords: options.MaxRecords, MaxBytes: options.MaxBytes, Relaxed: options.Relaxed, Log: options.Journal, Follow: result.follow})
 	if err != nil {
 		return nil, err
 	}
-	result := &Service{blobs: blobs, records: records, indexed: indexed, options: options, index: newCatalogIndex(), files: pager.New[Entry](), searches: pager.New[uint64]()}
-	if err := result.loadIndex(context.Background()); err != nil {
+	result.records = records
+	if err := records.CatchUp(context.Background()); err != nil {
 		return nil, errors.Join(err, records.Close())
 	}
 	return result, nil
@@ -153,11 +157,20 @@ func start(ctx context.Context, op string, key string) (context.Context, *observ
 }
 func closedError() error { return errors.Join(ErrClosed, journal.ErrClosed) }
 
-func (s *Service) requireOpen() error {
+// requireOpen also catches the derived state up to the journal's latest record, so
+// a read sees every commit that finished before it began, from any process.
+func (s *Service) requireOpen(ctx context.Context) error {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.closed {
+	closed := s.closed
+	s.mu.RUnlock()
+	if closed {
 		return closedError()
+	}
+	if err := s.records.CatchUp(ctx); err != nil {
+		if errors.Is(err, journal.ErrClosed) {
+			return errors.Join(closedError(), err)
+		}
+		return err
 	}
 	return nil
 }
@@ -188,7 +201,7 @@ func (s *Service) Sequence(ctx context.Context) (uint64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	if err := s.requireOpen(); err != nil {
+	if err := s.requireOpen(ctx); err != nil {
 		return 0, err
 	}
 	return s.records.Sequence(), nil
@@ -227,7 +240,7 @@ func decodeChange(entry journal.Entry) (provenance.Change, error) {
 func (s *Service) Changes(ctx context.Context, q provenance.ChangeQuery) (page provenance.ChangePage, result error) {
 	ctx, span := start(ctx, "changes", "")
 	defer func() { span.End(result) }()
-	if err := s.requireOpen(); err != nil {
+	if err := s.requireOpen(ctx); err != nil {
 		return page, err
 	}
 	return s.records.Changes(ctx, q, decodeChange)
@@ -342,7 +355,7 @@ func (s *Service) commit(ctx context.Context, p publication) (id ID, resultErr e
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	if err := s.requireOpen(); err != nil {
+	if err := s.requireOpen(ctx); err != nil {
 		return "", err
 	}
 	metadata, err := normalizeMetadata(p.metadata, false)
@@ -466,7 +479,7 @@ func (s *Service) commit(ctx context.Context, p publication) (id ID, resultErr e
 	if err != nil {
 		return id, errors.Join(append(cleanup, err)...)
 	}
-	if err := s.requireOpen(); err != nil {
+	if err := s.requireOpen(ctx); err != nil {
 		return id, errors.Join(append(cleanup, err)...)
 	}
 	_, reused, err = s.records.Commit(ctx, journal.Txn{Key: string(id), Data: serialized, Apply: func(e journal.Entry) {
@@ -632,7 +645,7 @@ func (s *Service) Get(ctx context.Context, id ID) (manifest Manifest, resultErr 
 	if err := ctx.Err(); err != nil {
 		return Manifest{}, err
 	}
-	if err := s.requireOpen(); err != nil {
+	if err := s.requireOpen(ctx); err != nil {
 		return Manifest{}, err
 	}
 	root, err := s.loadRoot(ctx, id)
@@ -714,31 +727,28 @@ func (x *catalogIndex) addOccurrence(sequence uint64, o Occurrence) {
 	}
 }
 
-// loadIndex rebuilds only the resident index, by streaming the journal once. It
-// reads no CAS content, so opening does not scale with stored payload.
-func (s *Service) loadIndex(ctx context.Context) error {
-	index := newCatalogIndex()
-	return errors.Join(s.records.Scan(ctx, 0, 0, func(entry journal.Entry) error {
-		if strings.HasPrefix(entry.Key, occurrenceKeyPrefix) {
-			o, err := s.decodeOccurrence(entry)
-			if err != nil {
-				return err
-			}
-			index.addOccurrence(entry.Sequence, o)
-			return nil
-		}
-		record, err := decodeMembership(entry)
+// follow adds one record this process did not commit to the resident index: every
+// record on open, and other processes' records on catch-up. It reads no CAS
+// content, so opening does not scale with stored payload.
+func (s *Service) follow(entry journal.Entry) error {
+	if strings.HasPrefix(entry.Key, occurrenceKeyPrefix) {
+		o, err := s.decodeOccurrence(entry)
 		if err != nil {
 			return err
 		}
-		index.addMembership(entry.Sequence, record)
-		return nil
-	}), func() error {
 		s.mu.Lock()
-		defer s.mu.Unlock()
-		s.index = index
+		s.index.addOccurrence(entry.Sequence, o)
+		s.mu.Unlock()
 		return nil
-	}())
+	}
+	record, err := decodeMembership(entry)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.index.addMembership(entry.Sequence, record)
+	s.mu.Unlock()
+	return nil
 }
 
 // Rebuild deep-validates authoritative registrations against their immutable
@@ -752,7 +762,7 @@ func (s *Service) Rebuild(ctx context.Context) (resultErr error) {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := s.requireOpen(); err != nil {
+		if err := s.requireOpen(ctx); err != nil {
 			return err
 		}
 		watermark := s.records.Sequence()
@@ -837,7 +847,7 @@ func (s *Service) registered(ctx context.Context, id ID) (membership, error) {
 	if err := ctx.Err(); err != nil {
 		return membership{}, err
 	}
-	if err := s.requireOpen(); err != nil {
+	if err := s.requireOpen(ctx); err != nil {
 		return membership{}, err
 	}
 	if _, err := ParseID(string(id)); err != nil {
@@ -875,7 +885,7 @@ func (s *Service) Category(ctx context.Context, id ID) (category observability.C
 func (s *Service) Reachable(ctx context.Context, visit func(cas.ID) error) (result error) {
 	ctx, span := start(ctx, "reachable", "")
 	defer func() { span.End(result) }()
-	if err := s.requireOpen(); err != nil {
+	if err := s.requireOpen(ctx); err != nil {
 		return err
 	}
 	return s.records.Scan(ctx, 0, 0, func(entry journal.Entry) error {

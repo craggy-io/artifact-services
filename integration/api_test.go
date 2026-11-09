@@ -17,7 +17,7 @@ import (
 // publicPackages is the stable surface, in the order of the golden file. Anything
 // under internal/ is free to change.
 var publicPackages = []string{
-	"storage", "cas", "artifacts", "objects", "lineage", "assertions", "provenance", "observability",
+	"backend", "storage", "cas", "artifacts", "objects", "lineage", "assertions", "provenance", "observability",
 	"adapters/stack", "adapters/runs", "adapters/typed", "adapters/spool", "adapters/treeio", "adapters/gc", "adapters/testkit", "adapters/watch",
 }
 

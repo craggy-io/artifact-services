@@ -70,11 +70,7 @@ func New(store artifacts.Store, options Options) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	j, err := journal.Open(options.Root, journal.Options{Config: config, MaxRecords: options.MaxRecords, MaxBytes: options.MaxBytes, Relaxed: options.Relaxed})
-	if err != nil {
-		return nil, err
-	}
-	s := &Service{artifacts: store, options: options, journal: j, indexed: indexed, heads: map[string]ID{}, histories: journal.Postings{}, metadata: journal.Postings{}, pages: pager.New[uint64](), traversals: pager.New[traversalItem]()}
+	s := &Service{artifacts: store, options: options, indexed: indexed, heads: map[string]ID{}, histories: journal.Postings{}, metadata: journal.Postings{}, pages: pager.New[uint64](), traversals: pager.New[traversalItem]()}
 	s.resolver = provenance.Resolver{
 		Revision: s.ValidateRevision,
 		Artifact: func(ctx context.Context, id string) error {
@@ -107,18 +103,28 @@ func New(store artifacts.Store, options Options) (*Service, error) {
 			return s.validateActivity(ID(id))
 		},
 	}
-	err = j.Scan(context.Background(), 0, 0, func(entry journal.Entry) error {
-		p, err := decodePersisted(entry)
-		if err != nil {
-			return err
-		}
-		s.applyIndexes(p.Record, entry.Sequence)
-		return nil
-	})
+	j, err := journal.Open(options.Root, journal.Options{Config: config, MaxRecords: options.MaxRecords, MaxBytes: options.MaxBytes, Relaxed: options.Relaxed, Log: options.Journal, Follow: s.follow})
 	if err != nil {
+		return nil, err
+	}
+	s.journal = j
+	if err := j.CatchUp(context.Background()); err != nil {
 		return nil, errors.Join(err, j.Close())
 	}
 	return s, nil
+}
+
+// follow applies a record this process did not commit: every record on open, and
+// other processes' records on catch-up.
+func (s *Service) follow(entry journal.Entry) error {
+	p, err := decodePersisted(entry)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.applyIndexes(p.Record, entry.Sequence)
+	s.mu.Unlock()
+	return nil
 }
 
 func decodePersisted(entry journal.Entry) (persisted, error) {
@@ -175,7 +181,7 @@ func (s *Service) Sequence(ctx context.Context) (uint64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	if err := s.requireOpen(); err != nil {
+	if err := s.requireOpen(ctx); err != nil {
 		return 0, err
 	}
 	return s.journal.Sequence(), nil
@@ -195,7 +201,7 @@ func (s *Service) OnCommit(hook func(sequence uint64)) (stop func()) {
 func (s *Service) Changes(ctx context.Context, q provenance.ChangeQuery) (page provenance.ChangePage, result error) {
 	ctx, span := start(ctx, "changes", "")
 	defer func() { span.End(result) }()
-	if err := s.requireOpen(); err != nil {
+	if err := s.requireOpen(ctx); err != nil {
 		return page, err
 	}
 	return s.journal.Changes(ctx, q, func(entry journal.Entry) (provenance.Change, error) {
@@ -234,11 +240,21 @@ func kind(r Record) string {
 	}
 	return ""
 }
-func (s *Service) requireOpen() error {
+
+// requireOpen also catches the derived state up to the journal's latest record, so
+// a read sees every commit that finished before it began, from any process.
+func (s *Service) requireOpen(ctx context.Context) error {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.closed {
+	closed := s.closed
+	s.mu.RUnlock()
+	if closed {
 		return closedError()
+	}
+	if err := s.journal.CatchUp(ctx); err != nil {
+		if errors.Is(err, journal.ErrClosed) {
+			return errors.Join(closedError(), err)
+		}
+		return err
 	}
 	return nil
 }
@@ -299,7 +315,7 @@ func (s *Service) Record(ctx context.Context, r Record) (id ID, result error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	if err := s.requireOpen(); err != nil {
+	if err := s.requireOpen(ctx); err != nil {
 		return "", err
 	}
 	r.Sequence = 0
@@ -320,7 +336,7 @@ func (s *Service) Record(ctx context.Context, r Record) (id ID, result error) {
 	if err != nil {
 		return "", err
 	}
-	if err := s.requireOpen(); err != nil {
+	if err := s.requireOpen(ctx); err != nil {
 		return "", err
 	}
 	// The head check and the record are one commit, so racing writers on a guarded
@@ -396,7 +412,7 @@ func (s *Service) Head(ctx context.Context, history string) (id ID, result error
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	if err := s.requireOpen(); err != nil {
+	if err := s.requireOpen(ctx); err != nil {
 		return "", err
 	}
 	s.mu.RLock()
@@ -446,7 +462,7 @@ func (s *Service) Get(ctx context.Context, id ID) (r Record, result error) {
 	if err := ctx.Err(); err != nil {
 		return r, err
 	}
-	if err := s.requireOpen(); err != nil {
+	if err := s.requireOpen(ctx); err != nil {
 		return r, err
 	}
 	if !validID(id) {

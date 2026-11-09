@@ -17,6 +17,8 @@ has privileged access, so anything here could be rebuilt by a consumer.
 | [`watch`](#watch) | Follow every commit to the journals, once and in order, from a saved position |
 | [`testkit`](#testkit) | Build a full stack in a test |
 | [`sqlindex`](#sqlindex) | Query everything with read-only SQL (separate Go module) |
+| [`postgres`](#postgres) | Keep every journal in PostgreSQL, shared by several processes (separate Go module) |
+| [`gcs`](#gcs) | Keep blobs in a Google Cloud Storage bucket (separate Go module) |
 
 ## stack
 
@@ -26,6 +28,19 @@ that every reference form resolves. `Close` closes assertions, lineage and artif
 in that order. A root opened this way holds three leases, and all are released on
 `Close` or process death. This is the wiring [AGENTS.md](../AGENTS.md) describes, in
 executable form. Open one stack per independent root; the consumer decides how many.
+
+`Options.Blobs` and `Options.Journals` replace the local blobs and journals with shared
+backends, for a service that runs as several instances:
+
+```go
+journals, err := postgres.New(ctx, pool, postgres.Options{})
+bucket, err := gcs.New(client, "craggy-models-blobs", "blobs/")
+st, err := stack.Open(stack.Options{Root: localScratch, Blobs: bucket, Journals: journals.Journals()})
+```
+
+`Root` then holds only staging. [`stacktest`](../adapters/stack/stacktest/stacktest.go)
+runs one suite over any pair of backends, including two stacks sharing one; see
+[durability](durability.md#shared-backends) for what changes.
 
 `Stack.PublishTable(ctx, memo, def, rows)` publishes rows as a table artifact validated
 against `def`, defining the schema once per assertions service and memo key (a changed
@@ -173,3 +188,25 @@ Results are as of `Positions`, not a transaction across journals. The tables are
 [schema.sql](../adapters/sqlindex/schema.sql). A consumer with many queries depends on
 those names, so the schema is versioned API: `SchemaVersion` changes when a name changes,
 and `Open` refuses other versions with `ErrSchemaVersion`. The fix is to rebuild.
+
+## postgres
+
+`github.com/craggy-io/artifact-services/adapters/postgres` keeps every journal root as
+rows in one PostgreSQL database, so any number of processes can serve one stack. `New`
+creates its two tables if missing (safe to run from several processes at once).
+`Options.Prefix` namespaces root names, so several stacks can share a database. The caller
+owns the `pgxpool.Pool`: on Cloud SQL, connect with the Cloud SQL Go connector and IAM
+database authentication. Size the pool for one held `LISTEN` connection plus a commit and
+a read per journal root: at least six for a full stack. `Backend.Close` stops the listener
+after the stacks close. Commit semantics are in [durability](durability.md#shared-backends).
+Its tests need `ARTIFACT_SERVICES_POSTGRES_DSN` and fail without it.
+
+## gcs
+
+`github.com/craggy-io/artifact-services/adapters/gcs` is a `storage.Store` over one bucket,
+with `Stater` and `Reclaimer` so `gc` works. `Put` creates an object only if none exists,
+mapping the precondition failure to `ErrAlreadyExists`, and an interrupted upload never
+becomes visible. A `Put` that finds the key refreshes the object's custom time, and
+`Remove` deletes conditionally on the generation it checked, so a blob in reuse survives a
+concurrent sweep. It is not `Seekable`: `cas.OpenSeekable` returns `ErrCapability`, so use
+[`spool`](#spool). Its tests need a GCS emulator at `STORAGE_EMULATOR_HOST`.

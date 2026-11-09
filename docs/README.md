@@ -24,7 +24,8 @@ Each guide uses the same sections: purpose, mental model, responsibilities and b
 
 - [Query contracts](queries.md): discovery, traversal, snapshot cursors, index authority and visibility.
 - [Walkthrough](walkthrough.md): ingestion, typed snapshots, schema evolution and cross-history derivation.
-- [Durability](durability.md): what success promises, crash recovery, and retryable composite operations.
+- [Durability](durability.md): what success promises, crash recovery, shared backends, and retryable composite operations.
+- [Decisions](decisions/): architecture decision records, starting with [shared journal and blob backends](decisions/0001-shared-journal-and-blob-backends.md).
 - [Adapters](adapters.md): optional packages for wiring, runs, typed access, tree I/O, spooling, GC, journal watching, testing and SQL.
 - [Stability](stability.md): API drift guard, releases and on-disk format policy.
 - [Verification](verification.md): runnable checks, crash qualification and qualified large-scale measurements.

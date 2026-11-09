@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/craggy-io/artifact-services/artifacts"
+	"github.com/craggy-io/artifact-services/backend"
 	"github.com/craggy-io/artifact-services/internal/journal"
 	"github.com/craggy-io/artifact-services/provenance"
 )
@@ -132,6 +133,8 @@ type Options struct {
 	MaxRecords        int
 	MaxBytes          int64
 	Relaxed           bool
+	// Journal selects the record log; nil keeps the local file log at Root.
+	Journal backend.Opener
 }
 
 // Query predicates are ANDed. Role requires Ref. An empty role matches any

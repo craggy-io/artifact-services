@@ -131,8 +131,13 @@ adapters/stack func (s *Stack) Close() error
 adapters/stack func (s *Stack) PublishTable(ctx context.Context, memo string, def objects.SchemaDefinition, rows []map[string]any) (artifacts.ID, error)
 adapters/stack func Open(o Options) (*Stack, error)
 adapters/stack func TableSchema(key []string, cols ...objects.Column) objects.SchemaDefinition
+adapters/stack type Blobs interface
+adapters/stack type Blobs method storage.Reclaimer
+adapters/stack type Blobs method storage.Store
 adapters/stack type Options field ArtifactMetadata []string
 adapters/stack type Options field Authority *assertions.Authority
+adapters/stack type Options field Blobs Blobs
+adapters/stack type Options field Journals backend.Journals
 adapters/stack type Options field LineageMetadata []string
 adapters/stack type Options field MaxArtifactEntries int64
 adapters/stack type Options field MaxBytes int64
@@ -144,7 +149,7 @@ adapters/stack type Options field Root string
 adapters/stack type Options struct
 adapters/stack type Stack field Artifacts *artifacts.Service
 adapters/stack type Stack field Assertions *assertions.Service
-adapters/stack type Stack field Blobs *storage.Filesystem
+adapters/stack type Stack field Blobs Blobs
 adapters/stack type Stack field CAS *cas.Service
 adapters/stack type Stack field Lineage *lineage.Service
 adapters/stack type Stack field Objects *objects.Service
@@ -403,6 +408,7 @@ artifacts type OccurrenceRequest field Origin string
 artifacts type OccurrenceRequest field Producer string
 artifacts type OccurrenceRequest struct
 artifacts type Options field IndexedMetadata []string
+artifacts type Options field Journal backend.Opener
 artifacts type Options field MaxBytes int64
 artifacts type Options field MaxEntries int64
 artifacts type Options field MaxLinkDepth int
@@ -491,6 +497,7 @@ assertions type Kind struct
 assertions type KindID string
 assertions type LeaseError = journal.LeaseError
 assertions type Options field Authority *Authority
+assertions type Options field Journal backend.Opener
 assertions type Options field MaxBytes int64
 assertions type Options field MaxRecords int
 assertions type Options field Relaxed bool
@@ -545,6 +552,31 @@ assertions var ErrLimit
 assertions var ErrNamespace
 assertions var ErrNotFound
 assertions var ErrWriterForbidden
+backend func (e *CommitError) Error() string
+backend func (e *CommitError) Unwrap() error
+backend type CommitError field Committed bool
+backend type CommitError field Err error
+backend type CommitError struct
+backend type Entry field Data json.RawMessage
+backend type Entry field Key string
+backend type Entry field Sequence uint64
+backend type Entry struct
+backend type Journals func(root string) Opener
+backend type Log interface
+backend type Log method Append(ctx context.Context, key string, data []byte, prepare func(ctx context.Context, latest uint64) error) (Entry, bool, error)
+backend type Log method At(ctx context.Context, sequence uint64) (Entry, error)
+backend type Log method Close() error
+backend type Log method Get(ctx context.Context, key string) (Entry, bool, error)
+backend type Log method Latest(ctx context.Context) (uint64, error)
+backend type Log method Scan(ctx context.Context, after, until uint64, visit func(Entry) error) error
+backend type Log method Watch(hook func()) (stop func())
+backend type Opener func(ctx context.Context, config []byte) (Log, error)
+backend var ErrCapacity
+backend var ErrClosed
+backend var ErrConfig
+backend var ErrConflict
+backend var ErrCorrupt
+backend var ErrFormat
 cas func (e *PutError) Error() string
 cas func (e *PutError) Unwrap() error
 cas func (s *Service) Exists(ctx context.Context, id ID) (exists bool, resultErr error)
@@ -635,6 +667,7 @@ lineage type Node field Depth int
 lineage type Node field Ref provenance.Ref
 lineage type Node struct
 lineage type Options field IndexedMetadata []string
+lineage type Options field Journal backend.Opener
 lineage type Options field MaxBytes int64
 lineage type Options field MaxRecords int
 lineage type Options field Relaxed bool
@@ -985,6 +1018,7 @@ storage func (s *Filesystem) Stat(ctx context.Context, key string) (info Info, r
 storage func (s *Filesystem) SweepPending(ctx context.Context, olderThan time.Time) (removed int, result error)
 storage func (s *Filesystem) Walk(ctx context.Context, visit func(key string, info Info) error) (result error)
 storage func NewFilesystem(root string) (*Filesystem, error)
+storage func ValidateKey(key string) error
 storage type File interface
 storage type File method io.ReadSeekCloser
 storage type File method io.ReaderAt

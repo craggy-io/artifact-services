@@ -1,28 +1,43 @@
-// Package stack opens every layer over one directory with the wiring that is easy to
-// get wrong: distinct roots, cross-layer reference validators, and close order. It
-// composes public constructors only; an application that needs fewer layers, or other
-// paths, should construct them directly.
+// Package stack opens every layer with the wiring that is easy to get wrong: distinct
+// roots, cross-layer reference validators, and close order. By default everything
+// lives under one local directory. Options.Blobs and Options.Journals swap in shared
+// backends, such as adapters/gcs and adapters/postgres, so several processes can
+// serve one stack. It composes public constructors only; an application that needs
+// fewer layers, or other paths, should construct them directly.
 package stack
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 
 	"github.com/craggy-io/artifact-services/artifacts"
 	"github.com/craggy-io/artifact-services/assertions"
+	"github.com/craggy-io/artifact-services/backend"
 	"github.com/craggy-io/artifact-services/cas"
 	"github.com/craggy-io/artifact-services/lineage"
 	"github.com/craggy-io/artifact-services/objects"
 	"github.com/craggy-io/artifact-services/storage"
 )
 
-// Options configures a stack. Root holds everything. Authority and
-// ReservedNamespaces go to the assertion layer; the rest narrow what each layer
-// indexes or holds. Relaxed trades OS-crash durability for speed in every journal.
+// Blobs is a blob backend the stack can also garbage-collect.
+type Blobs interface {
+	storage.Store
+	storage.Reclaimer
+}
+
+// Options configures a stack. Root holds everything local: always the staging
+// directory, and the blobs and journals unless Blobs or Journals replace them.
+// Journals names one log per journal root ("catalog", "lineage", "assertions").
+// Authority and ReservedNamespaces go to the assertion layer; the rest narrow what
+// each layer indexes or holds. Relaxed trades OS-crash durability for speed in every
+// local journal.
 type Options struct {
 	Root               string
+	Blobs              Blobs
+	Journals           backend.Journals
 	Authority          *assertions.Authority
 	ReservedNamespaces map[string][]string
 	ArtifactMetadata   []string
@@ -38,7 +53,7 @@ type Options struct {
 // tools that need its optional capabilities.
 type Stack struct {
 	Root       string
-	Blobs      *storage.Filesystem
+	Blobs      Blobs
 	CAS        *cas.Service
 	Artifacts  *artifacts.Service
 	Objects    *objects.Service
@@ -50,9 +65,20 @@ type Stack struct {
 // recovery happens: a dead owner's lease is already gone, and torn journal tails are
 // truncated on open.
 func Open(o Options) (*Stack, error) {
-	blobs, err := storage.NewFilesystem(filepath.Join(o.Root, "blobs"))
-	if err != nil {
-		return nil, err
+	if o.Root == "" {
+		return nil, fmt.Errorf("stack: empty root")
+	}
+	blobs := o.Blobs
+	if blobs == nil {
+		local, err := storage.NewFilesystem(filepath.Join(o.Root, "blobs"))
+		if err != nil {
+			return nil, err
+		}
+		blobs = local
+	}
+	journal := func(string) backend.Opener { return nil }
+	if o.Journals != nil {
+		journal = o.Journals
 	}
 	staging := filepath.Join(o.Root, "staging")
 	if err := os.MkdirAll(staging, 0o755); err != nil {
@@ -70,6 +96,7 @@ func Open(o Options) (*Stack, error) {
 		MaxBytes:        o.MaxBytes,
 		Relaxed:         o.Relaxed,
 		TempDir:         staging,
+		Journal:         journal("catalog"),
 	})
 	if err != nil {
 		return nil, err
@@ -95,6 +122,7 @@ func Open(o Options) (*Stack, error) {
 		MaxRecords:      o.MaxRecords,
 		MaxBytes:        o.MaxBytes,
 		Relaxed:         o.Relaxed,
+		Journal:         journal("lineage"),
 	})
 	if err != nil {
 		return nil, errors.Join(err, snapshots.Close())
@@ -109,6 +137,7 @@ func Open(o Options) (*Stack, error) {
 		MaxRecords:         o.MaxRecords,
 		MaxBytes:           o.MaxBytes,
 		Relaxed:            o.Relaxed,
+		Journal:            journal("assertions"),
 	})
 	if err != nil {
 		return nil, errors.Join(err, history.Close(), snapshots.Close())

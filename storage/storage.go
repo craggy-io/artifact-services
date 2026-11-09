@@ -15,6 +15,20 @@ var (
 	ErrAlreadyExists = errors.New("storage: blob already exists")
 )
 
+// ValidateKey returns ErrInvalidKey unless key is 2–128 lowercase hexadecimal
+// characters. Every Store implementation enforces it.
+func ValidateKey(key string) error {
+	if len(key) < 2 || len(key) > 128 {
+		return ErrInvalidKey
+	}
+	for _, c := range key {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return ErrInvalidKey
+		}
+	}
+	return nil
+}
+
 // PutError records whether this Put call published a complete blob before failing.
 // Err must be non-nil and remains accessible through Unwrap. Store implementations
 // must wrap Put failures in this type, even when the source error is a PutError

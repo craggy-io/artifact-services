@@ -38,7 +38,7 @@ func (s *Service) Get(ctx context.Context, id ID) (a Assertion, result error) {
 	if err := ctx.Err(); err != nil {
 		return a, err
 	}
-	if err := s.requireOpen(); err != nil {
+	if err := s.requireOpen(ctx); err != nil {
 		return a, err
 	}
 	entry, ok, err := s.journal.Get(assertionPrefix + string(id))
@@ -59,7 +59,7 @@ func (s *Service) Current(ctx context.Context, kind KindID, key string) (a Asser
 	if err := ctx.Err(); err != nil {
 		return a, err
 	}
-	if err := s.requireOpen(); err != nil {
+	if err := s.requireOpen(ctx); err != nil {
 		return a, err
 	}
 	s.mu.RLock()
@@ -217,7 +217,7 @@ func (s *Service) List(ctx context.Context, q Query) (page Page, result error) {
 	if err := ctx.Err(); err != nil {
 		return page, err
 	}
-	if err := s.requireOpen(); err != nil {
+	if err := s.requireOpen(ctx); err != nil {
 		return page, err
 	}
 	if q.Key != "" && q.Kind == "" {

@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/craggy-io/artifact-services/backend"
 	"github.com/craggy-io/artifact-services/internal/journal"
 	"github.com/craggy-io/artifact-services/objects"
 	"github.com/craggy-io/artifact-services/observability"
@@ -168,4 +169,6 @@ type Options struct {
 	MaxRecords         int
 	MaxBytes           int64
 	Relaxed            bool
+	// Journal selects the record log; nil keeps the local file log at Root.
+	Journal backend.Opener
 }

@@ -23,6 +23,9 @@ func mustOpen(t *testing.T, root string, o Options) *Store {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
+	if err := s.CatchUp(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	return s
 }
 

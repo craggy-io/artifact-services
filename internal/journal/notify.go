@@ -53,7 +53,7 @@ func (s *Store) notify(sequence uint64) {
 func (s *Store) OnCommit(hook func(uint64)) (stop func()) {
 	u := &subscriber{hook: hook, wake: make(chan struct{}, 1), done: make(chan struct{})}
 	s.mu.Lock()
-	closed := s.closed
+	closed := s.closed.Load()
 	if !closed {
 		s.subscribers[u] = struct{}{}
 	}

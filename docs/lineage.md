@@ -17,7 +17,7 @@ row/column evidence and exact history-qualified references.
 - Validate registered artifact references and stream explicit row/column/cell mapping evidence, including value and predicate/control dependencies; detailed selectors require a validator.
 - Filter records by kind and reference role, and page over fixed snapshots with expiring cursors.
 - Traverse explicit relationships, revision parents, and detailed mappings with depth, node, result, and work bounds; report truncation separately from evidence coverage.
-- Persist records in an exclusive local journal, retain caller/adapter coverage assertions, and hide Internal support records from ordinary discovery.
+- Persist records in an exclusive local journal (or a shared one, see [durability](durability.md#shared-backends)), retain caller/adapter coverage assertions, and hide Internal support records from ordinary discovery.
 
 ## Mental model
 
@@ -53,8 +53,12 @@ returns ErrConflict. Arrays retain their order as part of record identity.
 Authoritative records are immutable journal entries under an exclusive root lease, each
 stamped with `Record.Sequence`. Commit and index update happen in one critical section, so
 a fresh query sees successful prior records, with no background lag. Opening replays the
-journal into a resident key index and offsets, not record values. One live Service owns a
-root; a dead owner's lease disappears with it. See [durability](durability.md).
+journal into a resident key index and offsets, not record values. With the local backend,
+one live Service owns a root; a dead owner's lease disappears with it. With a shared
+backend, Services on several processes serve one root: each catches up to the journal's
+latest record before a read, and a guarded `Append` checks the head inside the commit
+transaction, so exactly one of two racing writers wins wherever they run. See
+[durability](durability.md#shared-backends).
 
 ## Public interfaces
 

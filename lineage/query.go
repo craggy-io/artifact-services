@@ -77,7 +77,7 @@ func (s *Service) resolve(ref provenance.Ref) provenance.Ref {
 func (s *Service) List(ctx context.Context, q Query) (page Page, result error) {
 	ctx, span := start(ctx, "list", "")
 	defer func() { span.End(result) }()
-	if err := s.requireOpen(); err != nil {
+	if err := s.requireOpen(ctx); err != nil {
 		return page, err
 	}
 	if err := ctx.Err(); err != nil {
@@ -348,7 +348,7 @@ func normalizeTraversal(q *TraversalQuery) error {
 func (s *Service) Traverse(ctx context.Context, q TraversalQuery) (page TraversalPage, result error) {
 	ctx, span := start(ctx, "traverse", "")
 	defer func() { span.End(result) }()
-	if err := s.requireOpen(); err != nil {
+	if err := s.requireOpen(ctx); err != nil {
 		return page, err
 	}
 	if err := ctx.Err(); err != nil {

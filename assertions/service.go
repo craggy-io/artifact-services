@@ -86,16 +86,16 @@ func New(store artifacts.Store, options Options) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	j, err := journal.Open(options.Root, journal.Options{Config: config, MaxRecords: options.MaxRecords, MaxBytes: options.MaxBytes, Relaxed: options.Relaxed})
-	if err != nil {
-		return nil, err
-	}
-	s := &Service{artifacts: store, options: options, journal: j, pages: pager.New[uint64](), index: indexes{
+	s := &Service{artifacts: store, options: options, pages: pager.New[uint64](), index: indexes{
 		kinds: map[KindID]Kind{}, byKind: journal.Postings{}, bySubject: journal.Postings{}, byCited: journal.Postings{}, byKey: journal.Postings{}, endings: map[uint64]ending{}, internal: map[uint64]bool{},
 	}}
 	s.resolver = s.newResolver()
-	err = j.Scan(context.Background(), 0, 0, func(entry journal.Entry) error { return s.replay(entry) })
+	j, err := journal.Open(options.Root, journal.Options{Config: config, MaxRecords: options.MaxRecords, MaxBytes: options.MaxBytes, Relaxed: options.Relaxed, Log: options.Journal, Follow: s.follow})
 	if err != nil {
+		return nil, err
+	}
+	s.journal = j
+	if err := j.CatchUp(context.Background()); err != nil {
 		return nil, errors.Join(err, j.Close())
 	}
 	return s, nil
@@ -130,7 +130,15 @@ func (s *Service) newResolver() provenance.Resolver {
 	}
 }
 
-// replay applies one committed record to the indexes, on open and after commit alike.
+// follow applies a record this process did not commit: every record on open, and
+// other processes' records on catch-up.
+func (s *Service) follow(entry journal.Entry) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.replay(entry)
+}
+
+// replay applies one committed record to the indexes. Callers hold mu.
 func (s *Service) replay(entry journal.Entry) error {
 	switch {
 	case strings.HasPrefix(entry.Key, kindPrefix):
@@ -219,11 +227,20 @@ func (s *Service) Close() error {
 
 func closedError() error { return errors.Join(ErrClosed, journal.ErrClosed) }
 
-func (s *Service) requireOpen() error {
+// requireOpen also catches the derived state up to the journal's latest record, so
+// a read sees every commit that finished before it began, from any process.
+func (s *Service) requireOpen(ctx context.Context) error {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.closed {
+	closed := s.closed
+	s.mu.RUnlock()
+	if closed {
 		return closedError()
+	}
+	if err := s.journal.CatchUp(ctx); err != nil {
+		if errors.Is(err, journal.ErrClosed) {
+			return errors.Join(closedError(), err)
+		}
+		return err
 	}
 	return nil
 }
@@ -238,7 +255,7 @@ func (s *Service) Sequence(ctx context.Context) (uint64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	if err := s.requireOpen(); err != nil {
+	if err := s.requireOpen(ctx); err != nil {
 		return 0, err
 	}
 	return s.journal.Sequence(), nil
@@ -264,7 +281,7 @@ const (
 func (s *Service) Changes(ctx context.Context, q provenance.ChangeQuery) (page provenance.ChangePage, result error) {
 	ctx, span := start(ctx, "changes", "")
 	defer func() { span.End(result) }()
-	if err := s.requireOpen(); err != nil {
+	if err := s.requireOpen(ctx); err != nil {
 		return page, err
 	}
 	return s.journal.Changes(ctx, q, func(entry journal.Entry) (provenance.Change, error) {
@@ -329,7 +346,7 @@ func (s *Service) Register(ctx context.Context, kind Kind, writer Writer) (id Ki
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	if err := s.requireOpen(); err != nil {
+	if err := s.requireOpen(ctx); err != nil {
 		return "", err
 	}
 	if !validKindName(kind.Name) || kind.Version < 1 {
@@ -392,7 +409,7 @@ func (s *Service) GetKind(ctx context.Context, id KindID) (Kind, error) {
 	if err := ctx.Err(); err != nil {
 		return Kind{}, err
 	}
-	if err := s.requireOpen(); err != nil {
+	if err := s.requireOpen(ctx); err != nil {
 		return Kind{}, err
 	}
 	s.mu.RLock()
@@ -478,7 +495,7 @@ func (s *Service) Record(ctx context.Context, request Request) (id ID, result er
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	if err := s.requireOpen(); err != nil {
+	if err := s.requireOpen(ctx); err != nil {
 		return "", err
 	}
 	identity, err := s.authenticate(request.Writer)
@@ -614,7 +631,7 @@ func (s *Service) Retract(ctx context.Context, r Retraction) (result error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := s.requireOpen(); err != nil {
+	if err := s.requireOpen(ctx); err != nil {
 		return err
 	}
 	identity, err := s.authenticate(r.Writer)

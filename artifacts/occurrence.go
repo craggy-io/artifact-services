@@ -127,7 +127,7 @@ func (s *Service) RecordOccurrence(ctx context.Context, request OccurrenceReques
 	if err := ctx.Err(); err != nil {
 		return Occurrence{}, err
 	}
-	if err := s.requireOpen(); err != nil {
+	if err := s.requireOpen(ctx); err != nil {
 		return Occurrence{}, err
 	}
 	if request.ID == "" {
@@ -205,7 +205,7 @@ func (s *Service) GetOccurrence(ctx context.Context, id OccurrenceID) (occurrenc
 	if err := ctx.Err(); err != nil {
 		return Occurrence{}, err
 	}
-	if err := s.requireOpen(); err != nil {
+	if err := s.requireOpen(ctx); err != nil {
 		return Occurrence{}, err
 	}
 	if !provenance.ValidRecordID(string(id)) {
@@ -230,7 +230,7 @@ func (s *Service) Occurrences(ctx context.Context, q OccurrenceQuery) (page Occu
 	if err := ctx.Err(); err != nil {
 		return page, err
 	}
-	if err := s.requireOpen(); err != nil {
+	if err := s.requireOpen(ctx); err != nil {
 		return page, err
 	}
 	limit, err := normalizeLimit(q.Limit)
@@ -344,7 +344,7 @@ func occurrenceMatches(o Occurrence, q OccurrenceQuery) bool {
 func (s *Service) StatContent(ctx context.Context, id cas.ID) (size int64, result error) {
 	ctx, span := start(ctx, "stat_content", string(id))
 	defer func() { span.End(result) }()
-	if err := s.requireOpen(); err != nil {
+	if err := s.requireOpen(ctx); err != nil {
 		return 0, err
 	}
 	if _, err := cas.ParseID(string(id)); err != nil {

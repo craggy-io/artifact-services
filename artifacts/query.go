@@ -166,7 +166,7 @@ func (s *Service) ListFiles(ctx context.Context, id ID, query FileQuery) (page F
 	if err := ctx.Err(); err != nil {
 		return page, err
 	}
-	if err := s.requireOpen(); err != nil {
+	if err := s.requireOpen(ctx); err != nil {
 		return page, err
 	}
 	if _, err := ParseID(string(id)); err != nil {
@@ -300,7 +300,7 @@ func (s *Service) Stat(ctx context.Context, id ID, path string) (info FileInfo, 
 	if err := ctx.Err(); err != nil {
 		return FileInfo{}, err
 	}
-	if err := s.requireOpen(); err != nil {
+	if err := s.requireOpen(ctx); err != nil {
 		return FileInfo{}, err
 	}
 	if !validPath(path) {
@@ -437,7 +437,7 @@ func (s *Service) Search(ctx context.Context, query CatalogQuery) (page CatalogP
 	if err := ctx.Err(); err != nil {
 		return page, err
 	}
-	if err := s.requireOpen(); err != nil {
+	if err := s.requireOpen(ctx); err != nil {
 		return page, err
 	}
 	query, err := s.normalizeQuery(query)
@@ -517,7 +517,7 @@ func (s *Service) OpenFile(ctx context.Context, id ID, path string) (reader io.R
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if err := s.requireOpen(); err != nil {
+	if err := s.requireOpen(ctx); err != nil {
 		return nil, err
 	}
 	info, err := s.resolveFile(ctx, id, path)
@@ -542,7 +542,7 @@ func (s *Service) OpenSeekable(ctx context.Context, id ID, path string) (file ca
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if err := s.requireOpen(); err != nil {
+	if err := s.requireOpen(ctx); err != nil {
 		return nil, err
 	}
 	seeker, ok := s.blobs.(cas.Seeker)

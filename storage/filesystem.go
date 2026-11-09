@@ -49,13 +49,8 @@ func (s *Filesystem) blobPath(key string) (string, error) {
 	if s == nil || s.root == "" {
 		return "", errors.New("storage: Filesystem not constructed with NewFilesystem")
 	}
-	if len(key) < 2 || len(key) > 128 {
-		return "", ErrInvalidKey
-	}
-	for _, c := range key {
-		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
-			return "", ErrInvalidKey
-		}
+	if err := ValidateKey(key); err != nil {
+		return "", err
 	}
 	return filepath.Join(s.root, key[:2], key), nil
 }

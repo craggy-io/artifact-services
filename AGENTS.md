@@ -46,8 +46,11 @@ layers. Otherwise construct what the application needs, in dependency order:
    `ValidateActivity` for the reference forms in use.
 
 Handle each constructor error before using the result. Use distinct storage, catalog,
-lineage and assertion roots. Artifact, lineage and assertion journals each take an exclusive
-OS file lock on their root: one live service owns each. A dead owner's lock disappears with
+lineage and assertion roots. With the default local backend, artifact, lineage and assertion
+journals each take an exclusive OS file lock on their root: one live service owns each. With
+a shared backend (`adapters/postgres` journals, `adapters/gcs` blobs, wired through
+`Options.Journal` or `stack.Options`), any number of processes serve one root; see
+[durability](docs/durability.md#shared-backends). A dead owner's lock disappears with
 it, so reopening needs no recovery step; never delete a `.lease` file. Close methods release
 the locks; after stopping work and closing streams, close assertions, then lineage, then
 artifacts. Storage, CAS, and Objects have no service Close method. Closing an artifact
@@ -156,6 +159,9 @@ go test -race ./...
 go vet ./...
 go build ./...
 (cd adapters/sqlindex && go test ./...)
+# Shared backends; these fail without their servers (see docs/adapters.md):
+(cd adapters/postgres && ARTIFACT_SERVICES_POSTGRES_DSN=postgres://... go test ./...)
+(cd adapters/gcs && STORAGE_EMULATOR_HOST=127.0.0.1:4443 go test ./...)
 ```
 
 `TestExportedAPIMatchesGolden` fails on any exported-API change. Regenerate `api.golden.txt`

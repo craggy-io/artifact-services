@@ -43,6 +43,7 @@ The detailed error, cancellation, and publication [contract](storage.md#semantic
 - `Put(ctx context.Context, key string, source io.Reader) error`
 - `Open(ctx context.Context, key string) (io.ReadCloser, error)`
 - `Exists(ctx context.Context, key string) (bool, error)`
+- `ValidateKey(key string) error`: the key rule every implementation enforces
 
 Optional capabilities, implemented by `Filesystem`, so other backends stay honest:
 
@@ -54,6 +55,10 @@ Optional capabilities, implemented by `Filesystem`, so other backends stay hones
 existing key refreshes that time, so recently stored content is spared. Storage knows nothing
 about what refers to a blob: [`gc`](adapters.md#gc) decides that. `SweepPending` clears
 abandoned temporary files.
+
+[`adapters/gcs`](adapters.md#gcs) is a second implementation, over a Google Cloud Storage
+bucket, for stacks served by several processes. It implements `Stater` and `Reclaimer` but
+not `Seekable`.
 
 ## Working with other layers
 
