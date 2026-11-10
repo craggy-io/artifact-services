@@ -17,6 +17,7 @@ import (
 	"github.com/craggy-io/artifact-services/adapters/gcs"
 	"github.com/craggy-io/artifact-services/adapters/stack"
 	"github.com/craggy-io/artifact-services/adapters/stack/stacktest"
+	"github.com/craggy-io/artifact-services/cas"
 	blobs "github.com/craggy-io/artifact-services/storage"
 )
 
@@ -98,6 +99,24 @@ func TestPutNeverReplaces(t *testing.T) {
 	}
 	if got := read(t, s, "ab"); got != "first" {
 		t.Fatal(got)
+	}
+}
+
+// Storing content that is already stored reuses it: GCS's refusal of the second
+// write is the store's "already exists", with nothing else wrong.
+func TestCASReusesExistingContent(t *testing.T) {
+	ctx := context.Background()
+	c, err := cas.New(store(t), cas.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := c.Put(ctx, strings.NewReader("same content"))
+	if err != nil || first.Reused {
+		t.Fatal(first, err)
+	}
+	again, err := c.Put(ctx, strings.NewReader("same content"))
+	if err != nil || !again.Reused || again.ID != first.ID {
+		t.Fatal(again, err)
 	}
 }
 

@@ -120,7 +120,9 @@ func (s *Store) Put(ctx context.Context, key string, source io.Reader) (result e
 	}
 	if err := w.Close(); err != nil {
 		if preconditionFailed(err) {
-			return errors.Join(blobs.ErrAlreadyExists, err, s.touch(ctx, object))
+			// The 412 is the existence signal itself, so it is not passed on: callers
+			// such as cas treat any error beside ErrAlreadyExists as a real failure.
+			return errors.Join(blobs.ErrAlreadyExists, s.touch(ctx, object))
 		}
 		return err
 	}
