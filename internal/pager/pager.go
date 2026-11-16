@@ -111,9 +111,7 @@ func (c *Cache[T]) Page(query any, cursor string, limit int, build func() ([]T, 
 	if cursor == "" {
 		s = session[T]{query: hash, values: fresh, expires: now.Add(15 * time.Minute), bytes: size}
 		if len(fresh) > limit {
-			if len(c.sessions) >= 128 || c.bytes+size > 64<<20 {
-				return nil, "", ErrCapacity
-			}
+			c.makeRoom(size)
 			c.sessions[id] = s
 			c.bytes += size
 		}
@@ -143,6 +141,25 @@ func (c *Cache[T]) Page(query any, cursor string, limit int, build func() ([]T, 
 		next = prefix + "." + hex.EncodeToString(c.mac(prefix))
 	}
 	return page, next, nil
+}
+
+// makeRoom bounds retained snapshots when callers abandon pagination. A
+// displaced cursor expires early; active queries can start a fresh snapshot.
+func (c *Cache[T]) makeRoom(size int) {
+	for len(c.sessions) >= 128 || c.bytes+size > 64<<20 {
+		oldest := ""
+		for id, s := range c.sessions {
+			if oldest == "" || s.expires.Before(c.sessions[oldest].expires) ||
+				(s.expires.Equal(c.sessions[oldest].expires) && id < oldest) {
+				oldest = id
+			}
+		}
+		if oldest == "" {
+			return
+		}
+		c.bytes -= c.sessions[oldest].bytes
+		delete(c.sessions, oldest)
+	}
 }
 func (c *Cache[T]) mac(s string) []byte {
 	m := hmac.New(sha256.New, c.secret[:])
