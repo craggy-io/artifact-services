@@ -124,6 +124,7 @@ adapters/runs var ErrPriorFailure
 adapters/runs var ErrUndeclaredRead
 adapters/spool func (f *File) Close() error
 adapters/spool func Copy(ctx context.Context, source io.ReadCloser, dir string) (file *File, result error)
+adapters/spool func CopyLimit(ctx context.Context, source io.ReadCloser, dir string, maxBytes int64) (file *File, result error)
 adapters/spool func OpenFile(ctx context.Context, store *artifacts.Service, id artifacts.ID, path, dir string) (cas.SeekableFile, error)
 adapters/spool type File field *os.File
 adapters/spool type File struct

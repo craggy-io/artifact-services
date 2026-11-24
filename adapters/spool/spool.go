@@ -40,7 +40,18 @@ func (r contextReader) Read(p []byte) (int, error) {
 // Copy drains source into a temporary file under dir, where empty means the OS
 // default, and returns it rewound. A source that is an integrity-checking reader fails
 // at EOF on corruption, so success means the bytes were verified. Copy closes source.
+//
+// Copy is unbounded: only pass it streams whose size is already bounded
+// (a verified artifact read, as OpenFile does). For untrusted streams
+// use CopyLimit.
 func Copy(ctx context.Context, source io.ReadCloser, dir string) (file *File, result error) {
+	return CopyLimit(ctx, source, dir, 0)
+}
+
+// CopyLimit is Copy with a content-size bound: a source over maxBytes
+// fails with cas.ErrLimit and leaves no file behind. maxBytes <= 0
+// means unbounded.
+func CopyLimit(ctx context.Context, source io.ReadCloser, dir string, maxBytes int64) (file *File, result error) {
 	defer func() { result = errors.Join(result, source.Close()) }()
 	temp, err := os.CreateTemp(dir, "spool-*")
 	if err != nil {
@@ -52,8 +63,16 @@ func Copy(ctx context.Context, source io.ReadCloser, dir string) (file *File, re
 			result = errors.Join(result, temp.Close(), os.Remove(path))
 		}
 	}()
-	if _, err := io.Copy(temp, contextReader{ctx, source}); err != nil {
+	src := io.Reader(contextReader{ctx, source})
+	if maxBytes > 0 {
+		src = io.LimitReader(src, maxBytes+1)
+	}
+	n, err := io.Copy(temp, src)
+	if err != nil {
 		return nil, err
+	}
+	if maxBytes > 0 && n > maxBytes {
+		return nil, cas.ErrLimit
 	}
 	if _, err := temp.Seek(0, io.SeekStart); err != nil {
 		return nil, err
